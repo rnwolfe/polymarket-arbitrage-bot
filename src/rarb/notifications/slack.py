@@ -54,6 +54,10 @@ class SlackNotifier:
             log.error("Failed to send Slack notification", error=str(e))
             return False
 
+    async def send_message(self, text: str) -> bool:
+        """Alias for send() - provides compatibility with unified notifier interface."""
+        return await self.send(text)
+
     async def notify_arbitrage(
         self,
         market: str,
