@@ -6,7 +6,7 @@ import sys
 from web3 import Web3
 
 # Polygon mainnet
-RPC_URL = "https://polygon-rpc.com"
+RPC_URL = os.environ.get("POLYGON_RPC_URL", "https://polygon-rpc.com")
 
 # Contract addresses
 USDC_E = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
