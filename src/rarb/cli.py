@@ -28,6 +28,8 @@ def cli() -> None:
 @click.option("--poll-interval", type=float, help="Seconds between scans (polling mode only)")
 @click.option("--min-profit", type=float, help="Minimum profit threshold (e.g., 0.005 for 0.5%)")
 @click.option("--max-position", type=float, help="Maximum position size in USD")
+@click.option("--with-dashboard", is_flag=True, default=False, help="Run web dashboard alongside the bot")
+@click.option("--dashboard-port", type=int, help="Dashboard port (default: from config)")
 @click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]), default="INFO")
 def run(
     dry_run: bool,
@@ -35,10 +37,13 @@ def run(
     poll_interval: Optional[float],
     min_profit: Optional[float],
     max_position: Optional[float],
+    with_dashboard: bool,
+    dashboard_port: Optional[int],
     log_level: str,
 ) -> None:
     """Run the arbitrage bot."""
     import os
+    import threading
 
     # Override settings from CLI
     if dry_run is not None:
@@ -76,6 +81,20 @@ def run(
         console.print(f"[dim]Poll interval:[/dim] {settings.poll_interval_seconds}s")
     console.print(f"[dim]Min profit:[/dim] {settings.min_profit_threshold * 100:.1f}%")
     console.print(f"[dim]Max position:[/dim] ${settings.max_position_size}")
+
+    # Start dashboard in background thread if requested
+    dashboard_thread = None
+    if with_dashboard:
+        actual_port = dashboard_port or settings.dashboard_port
+        console.print(f"[dim]Dashboard:[/dim] http://0.0.0.0:{actual_port}")
+
+        def run_dashboard_thread() -> None:
+            from rarb.dashboard import run_dashboard
+            run_dashboard(host="0.0.0.0", port=actual_port)
+
+        dashboard_thread = threading.Thread(target=run_dashboard_thread, daemon=True)
+        dashboard_thread.start()
+
     console.print()
 
     try:
