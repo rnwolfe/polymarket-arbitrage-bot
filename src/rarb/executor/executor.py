@@ -478,12 +478,14 @@ class OrderExecutor:
         """
         Attempt to immediately unwind a position after a partial fill.
 
-        Uses aggressive pricing (sell slightly below best bid) to ensure fill.
-        This accepts a small loss to exit an unhedged position immediately.
+        Uses AGGRESSIVE pricing with escalating discounts and IOC orders to
+        ensure rapid exit from unhedged positions. This minimizes exposure time.
 
-        IMPORTANT: Wait for on-chain settlement before trying to sell.
-        The buy order is "matched" but tokens aren't available until the
-        settlement transaction is confirmed on Polygon (~2-3 seconds).
+        Strategy:
+        1. Start with minimal wait (1.5s) for settlement
+        2. Use IOC (Immediate-or-Cancel) orders for instant feedback
+        3. Escalate discounts if first attempts fail: 3% -> 5% -> 8% -> 12%
+        4. Each attempt is fast, total unwind time ~3-4 seconds max
 
         Args:
             token_id: Token to sell
@@ -501,119 +503,149 @@ class OrderExecutor:
             log.error("Cannot unwind - no async client available")
             return False
 
-        # Wait for on-chain settlement before trying to sell
-        # Polygon block time is ~2 seconds, wait for 2 confirmations
-        settlement_wait = 5.0  # seconds
-        log.info(
-            "Waiting for settlement before unwind",
-            wait_seconds=settlement_wait,
-            token_id=token_id[:16],
-        )
-        await asyncio.sleep(settlement_wait)
-
-        # Sell at a discount to ensure fill (accept 2-3% loss to exit immediately)
-        # This is better than holding an unhedged directional position
-        # Round DOWN to tick size (0.01) to ensure valid price
-        # Most Polymarket markets use 0.01 tick size, some use 0.001
-        raw_unwind = buy_price * 0.97
-        unwind_price = float(int(raw_unwind * 100) / 100)  # Floor to 0.01 tick size
+        # Aggressive unwind with escalating discounts
+        # Use shorter settlement wait (Polygon confirms in ~2s, we try at 1.5s and retry)
+        discounts = [0.97, 0.95, 0.92, 0.88]  # 3%, 5%, 8%, 12% cuts
+        settlement_waits = [1.5, 1.0, 0.5, 0.5]  # Initial wait, then shorter retries
 
         log.warning(
-            "Attempting emergency unwind",
+            "Starting aggressive unwind sequence",
             token_id=token_id[:16],
             size=size,
             buy_price=buy_price,
-            unwind_price=unwind_price,
-            expected_loss=f"${(buy_price - unwind_price) * size:.2f}",
+            discount_sequence="3% -> 5% -> 8% -> 12%",
+        )
+
+        total_loss = 0.0
+        for attempt, (discount, wait_time) in enumerate(zip(discounts, settlement_waits)):
+            # Wait for settlement (shorter on retries since we've already waited)
+            if attempt == 0:
+                log.info(
+                    "Waiting for settlement before unwind",
+                    wait_seconds=wait_time,
+                    token_id=token_id[:16],
+                )
+            await asyncio.sleep(wait_time)
+
+            # Calculate unwind price with current discount
+            raw_unwind = buy_price * discount
+            unwind_price = float(int(raw_unwind * 100) / 100)  # Floor to 0.01 tick size
+            expected_loss = (buy_price - unwind_price) * size
+
+            log.info(
+                f"Unwind attempt {attempt + 1}/{len(discounts)}",
+                token_id=token_id[:16],
+                discount=f"{(1 - discount) * 100:.0f}%",
+                unwind_price=f"${unwind_price:.4f}",
+                expected_loss=f"${expected_loss:.2f}",
+            )
+
+            try:
+                # Use IOC (Immediate-or-Cancel) for instant feedback
+                response = await async_client.submit_order(
+                    token_id=token_id,
+                    side=side,
+                    price=unwind_price,
+                    size=size,
+                    neg_risk=None,  # Auto-detect
+                    order_type="IOC",  # Immediate-or-Cancel for fast feedback
+                )
+
+                status = response.get("status", "").lower()
+                if status in ("filled", "matched"):
+                    actual_exit_price = unwind_price
+                    loss = (buy_price - actual_exit_price) * size
+                    cost_basis = buy_price * size
+                    realized_value = actual_exit_price * size
+
+                    log.info(
+                        "Unwind successful",
+                        token_id=token_id[:16],
+                        attempt=attempt + 1,
+                        discount=f"{(1 - discount) * 100:.0f}%",
+                        loss=f"${loss:.2f}",
+                    )
+
+                    # Record closed position in database
+                    try:
+                        asyncio.create_task(ClosedPositionRepository.insert(
+                            timestamp=datetime.now(timezone.utc).isoformat(),
+                            market_title=market_name[:100],
+                            outcome="unknown",  # We don't have YES/NO info here
+                            token_id=token_id,
+                            size=size,
+                            avg_price=buy_price,
+                            exit_price=actual_exit_price,
+                            cost_basis=cost_basis,
+                            realized_value=realized_value,
+                            realized_pnl=-loss,
+                            status="SOLD",
+                            redeemed=False,
+                        ))
+                    except Exception as e:
+                        log.debug("Failed to record closed position", error=str(e))
+
+                    # Send notification about unwind
+                    try:
+                        notifier = get_notifier()
+                        asyncio.create_task(notifier.send_message(
+                            f"🔄 Emergency unwind: Sold {size:.2f} tokens at ${unwind_price:.4f} "
+                            f"(bought at ${buy_price:.4f}). Loss: ${loss:.2f}\n"
+                            f"Market: {market_name[:50]}"
+                        ))
+                    except Exception:
+                        pass
+
+                    return True
+
+                elif status in ("canceled", "cancelled", "not_matched", "expired"):
+                    # IOC didn't fill - try next discount level
+                    log.info(
+                        f"IOC order not filled at {(1 - discount) * 100:.0f}% discount, trying deeper",
+                        status=status,
+                    )
+                    continue
+
+                else:
+                    # Unexpected status - log and try next
+                    log.warning(
+                        "Unexpected unwind order status",
+                        status=status,
+                        order_id=response.get("orderID", "")[:20],
+                    )
+                    continue
+
+            except Exception as e:
+                if "insufficient" in str(e).lower() or "balance" in str(e).lower():
+                    # Tokens not settled yet - wait longer on next attempt
+                    log.info("Tokens not settled yet, retrying", error=str(e)[:50])
+                    continue
+                else:
+                    log.error(f"Unwind attempt {attempt + 1} failed", error=str(e))
+                    continue
+
+        # All attempts failed - send critical alert
+        log.error(
+            "ALL UNWIND ATTEMPTS FAILED - MANUAL INTERVENTION REQUIRED",
+            token_id=token_id[:16],
+            size=size,
+            buy_price=buy_price,
         )
 
         try:
-            # Use GTC order for unwind (FOK might not fill if liquidity is thin)
-            response = await async_client.submit_order(
-                token_id=token_id,
-                side=side,
-                price=unwind_price,
-                size=size,
-                neg_risk=None,  # Auto-detect
-                order_type="GTC",  # GTC for better fill chance
-            )
+            notifier = get_notifier()
+            asyncio.create_task(notifier.send_message(
+                f"⚠️ CRITICAL: ALL UNWIND ATTEMPTS FAILED\n"
+                f"Could not sell {size:.2f} tokens\n"
+                f"Token: {token_id[:16]}...\n"
+                f"Buy price: ${buy_price:.4f}\n"
+                f"Market: {market_name[:50]}\n"
+                f"MANUAL INTERVENTION REQUIRED"
+            ))
+        except Exception:
+            pass
 
-            status = response.get("status", "").lower()
-            if status in ("filled", "matched", "delayed", "live"):
-                # For GTC orders, "live" or "delayed" means submitted - check if it filled
-                actual_exit_price = unwind_price
-                loss = (buy_price - actual_exit_price) * size
-                cost_basis = buy_price * size
-                realized_value = actual_exit_price * size
-
-                log.info(
-                    "Unwind successful",
-                    token_id=token_id[:16],
-                    status=status,
-                    loss=f"${loss:.2f}",
-                )
-
-                # Record closed position in database
-                try:
-                    asyncio.create_task(ClosedPositionRepository.insert(
-                        timestamp=datetime.now(timezone.utc).isoformat(),
-                        market_title=market_name[:100],
-                        outcome="unknown",  # We don't have YES/NO info here
-                        token_id=token_id,
-                        size=size,
-                        avg_price=buy_price,
-                        exit_price=actual_exit_price,
-                        cost_basis=cost_basis,
-                        realized_value=realized_value,
-                        realized_pnl=-loss,
-                        status="SOLD",
-                        redeemed=False,
-                    ))
-                except Exception as e:
-                    log.debug("Failed to record closed position", error=str(e))
-
-                # Send notification about unwind
-                try:
-                    notifier = get_notifier()
-                    asyncio.create_task(notifier.send_message(
-                        f"🔄 Emergency unwind: Sold {size:.2f} tokens at ${unwind_price:.4f} "
-                        f"(bought at ${buy_price:.4f}). Loss: ${loss:.2f}\n"
-                        f"Market: {market_name[:50]}"
-                    ))
-                except Exception:
-                    pass
-
-                return True
-            else:
-                log.warning(
-                    "Unwind order submitted but not immediately filled",
-                    token_id=token_id[:16],
-                    status=status,
-                    order_id=response.get("orderID", "")[:20],
-                )
-                return False
-
-        except Exception as e:
-            log.error(
-                "Unwind failed",
-                token_id=token_id[:16],
-                error=str(e),
-            )
-
-            # Send alert about failed unwind
-            try:
-                notifier = get_notifier()
-                asyncio.create_task(notifier.send_message(
-                    f"⚠️ FAILED UNWIND: Could not sell {size:.2f} tokens\n"
-                    f"Token: {token_id[:16]}...\n"
-                    f"Error: {str(e)}\n"
-                    f"Market: {market_name[:50]}\n"
-                    f"MANUAL INTERVENTION REQUIRED"
-                ))
-            except Exception:
-                pass
-
-            return False
+        return False
 
     async def _wait_for_fills(
         self,
