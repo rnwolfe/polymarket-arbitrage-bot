@@ -81,6 +81,49 @@ class ArbitrageAlert:
 # Callback type for arbitrage alerts
 ArbitrageCallback = Callable[[ArbitrageAlert], None]
 
+# Slippage tolerance for book walking (in price units, e.g., 0.02 = 2 cents)
+DEFAULT_SLIPPAGE_TOLERANCE = Decimal("0.02")
+
+
+def calculate_book_depth_liquidity(
+    asks: list,
+    best_ask_price: Decimal,
+    max_slippage: Decimal = DEFAULT_SLIPPAGE_TOLERANCE,
+) -> tuple[Decimal, Decimal]:
+    """
+    Walk the order book to calculate total liquidity within slippage tolerance.
+    
+    Instead of only looking at the best ask size, this aggregates liquidity
+    across multiple price levels up to max_slippage above best ask.
+    
+    Args:
+        asks: List of ask levels (must have .price and .size attributes)
+        best_ask_price: The best (lowest) ask price
+        max_slippage: Maximum price above best ask to include (default 2 cents)
+    
+    Returns:
+        Tuple of (total_size, weighted_avg_price)
+    """
+    if not asks:
+        return Decimal("0"), best_ask_price
+    
+    max_price = best_ask_price + max_slippage
+    total_size = Decimal("0")
+    total_value = Decimal("0")  # For weighted average calculation
+    
+    for level in sorted(asks, key=lambda x: x.price):
+        if level.price > max_price:
+            break
+        total_size += level.size
+        total_value += level.size * level.price
+    
+    if total_size > 0:
+        weighted_avg_price = total_value / total_size
+    else:
+        weighted_avg_price = best_ask_price
+    
+    return total_size, weighted_avg_price
+
 
 class RealtimeScanner:
     """
@@ -378,33 +421,33 @@ class RealtimeScanner:
         first_seen = self._active_opportunities[market_id]
         duration_secs = (now - first_seen).total_seconds()
 
-        # Try to get fresh liquidity data from cached orderbooks if missing
+        # Get liquidity data using book walking for deeper analysis
+        # Instead of only looking at best ask, aggregate liquidity within slippage tolerance
         yes_size = prices.yes_best_ask_size
         no_size = prices.no_best_ask_size
 
-        if yes_size is None or no_size is None:
-            # Look up orderbooks from WebSocket clients
-            for client in self.ws_clients:
-                if yes_size is None:
-                    yes_book = client.get_orderbook(prices.market.yes_token.token_id)
-                    if yes_book and yes_book.asks:
-                        best_ask_price = min(a.price for a in yes_book.asks)
-                        for a in yes_book.asks:
-                            if a.price == best_ask_price:
-                                yes_size = a.size
-                                prices.yes_best_ask_size = yes_size  # Update cache
-                                break
-                if no_size is None:
-                    no_book = client.get_orderbook(prices.market.no_token.token_id)
-                    if no_book and no_book.asks:
-                        best_ask_price = min(a.price for a in no_book.asks)
-                        for a in no_book.asks:
-                            if a.price == best_ask_price:
-                                no_size = a.size
-                                prices.no_best_ask_size = no_size  # Update cache
-                                break
-                if yes_size is not None and no_size is not None:
-                    break
+        # Look up orderbooks from WebSocket clients and walk the book
+        for client in self.ws_clients:
+            if yes_size is None or yes_size == Decimal("0"):
+                yes_book = client.get_orderbook(prices.market.yes_token.token_id)
+                if yes_book and yes_book.asks:
+                    best_ask_price = min(a.price for a in yes_book.asks)
+                    # Use book walking to get total liquidity within slippage tolerance
+                    yes_size, _ = calculate_book_depth_liquidity(
+                        yes_book.asks, best_ask_price, DEFAULT_SLIPPAGE_TOLERANCE
+                    )
+                    prices.yes_best_ask_size = yes_size  # Update cache with aggregated size
+            if no_size is None or no_size == Decimal("0"):
+                no_book = client.get_orderbook(prices.market.no_token.token_id)
+                if no_book and no_book.asks:
+                    best_ask_price = min(a.price for a in no_book.asks)
+                    # Use book walking to get total liquidity within slippage tolerance
+                    no_size, _ = calculate_book_depth_liquidity(
+                        no_book.asks, best_ask_price, DEFAULT_SLIPPAGE_TOLERANCE
+                    )
+                    prices.no_best_ask_size = no_size  # Update cache with aggregated size
+            if yes_size is not None and no_size is not None and yes_size > 0 and no_size > 0:
+                break
 
         alert = ArbitrageAlert(
             market=prices.market,
