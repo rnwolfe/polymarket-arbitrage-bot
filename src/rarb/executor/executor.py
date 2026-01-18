@@ -1198,52 +1198,69 @@ class OrderExecutor:
         no_needs_handling = no_result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED) and no_result.order_id
 
         if yes_needs_handling or no_needs_handling:
-            # If status is PENDING (delayed), wait briefly for matching engine
+            # If status is PENDING (delayed), use progressive polling instead of flat 300ms wait
+            # This resolves faster when orders fill quickly while still waiting long enough if needed
             if yes_result.status == ExecutionStatus.PENDING or no_result.status == ExecutionStatus.PENDING:
                 log.info(
-                    "FOK orders in 'delayed' state - waiting for matching engine",
+                    "FOK orders in 'delayed' state - using progressive polling",
                     yes_status=yes_result.status.value if yes_result.order_id else None,
                     no_status=no_result.status.value if no_result.order_id else None,
                 )
-                await asyncio.sleep(0.3)  # 300ms for matching engine
-
-                # Re-check order status
+                
+                # Progressive delays: 50ms, 100ms, 150ms (total 300ms max, but exits early if resolved)
                 async_client = self._async_client
-                if async_client and yes_needs_handling and yes_result.order_id:
-                    try:
-                        order_info = await async_client.get_order(yes_result.order_id)
-                        new_status = order_info.get("status", "").lower()
-                        log.debug("YES order status after wait", status=new_status)
-                        if new_status in ("filled", "matched"):
-                            yes_result.status = ExecutionStatus.FILLED
-                            yes_result.filled_size = yes_result.size
-                            self._update_order_status(yes_result.order_id, "filled", float(yes_result.size))
-                            yes_needs_handling = False
-                        elif new_status in ("canceled", "cancelled", "not_matched", "expired"):
-                            yes_result.status = ExecutionStatus.CANCELLED
-                            yes_result.filled_size = Decimal("0")
-                            self._update_order_status(yes_result.order_id, "cancelled", 0)
-                            yes_needs_handling = False
-                    except Exception as e:
-                        log.debug("Failed to check YES order status", error=str(e))
+                for poll_delay in [0.05, 0.10, 0.15]:
+                    await asyncio.sleep(poll_delay)
+                    
+                    # Check both orders in parallel for faster resolution
+                    resolved = True
+                    
+                    if async_client and yes_needs_handling and yes_result.order_id:
+                        try:
+                            order_info = await async_client.get_order(yes_result.order_id)
+                            new_status = order_info.get("status", "").lower()
+                            log.debug("YES order status poll", status=new_status, delay_ms=int(poll_delay * 1000))
+                            if new_status in ("filled", "matched"):
+                                yes_result.status = ExecutionStatus.FILLED
+                                yes_result.filled_size = yes_result.size
+                                self._update_order_status(yes_result.order_id, "filled", float(yes_result.size))
+                                yes_needs_handling = False
+                            elif new_status in ("canceled", "cancelled", "not_matched", "expired"):
+                                yes_result.status = ExecutionStatus.CANCELLED
+                                yes_result.filled_size = Decimal("0")
+                                self._update_order_status(yes_result.order_id, "cancelled", 0)
+                                yes_needs_handling = False
+                            else:
+                                resolved = False  # Still pending
+                        except Exception as e:
+                            log.debug("Failed to check YES order status", error=str(e))
+                            resolved = False
 
-                if async_client and no_needs_handling and no_result.order_id:
-                    try:
-                        order_info = await async_client.get_order(no_result.order_id)
-                        new_status = order_info.get("status", "").lower()
-                        log.debug("NO order status after wait", status=new_status)
-                        if new_status in ("filled", "matched"):
-                            no_result.status = ExecutionStatus.FILLED
-                            no_result.filled_size = no_result.size
-                            self._update_order_status(no_result.order_id, "filled", float(no_result.size))
-                            no_needs_handling = False
-                        elif new_status in ("canceled", "cancelled", "not_matched", "expired"):
-                            no_result.status = ExecutionStatus.CANCELLED
-                            no_result.filled_size = Decimal("0")
-                            self._update_order_status(no_result.order_id, "cancelled", 0)
-                            no_needs_handling = False
-                    except Exception as e:
-                        log.debug("Failed to check NO order status", error=str(e))
+                    if async_client and no_needs_handling and no_result.order_id:
+                        try:
+                            order_info = await async_client.get_order(no_result.order_id)
+                            new_status = order_info.get("status", "").lower()
+                            log.debug("NO order status poll", status=new_status, delay_ms=int(poll_delay * 1000))
+                            if new_status in ("filled", "matched"):
+                                no_result.status = ExecutionStatus.FILLED
+                                no_result.filled_size = no_result.size
+                                self._update_order_status(no_result.order_id, "filled", float(no_result.size))
+                                no_needs_handling = False
+                            elif new_status in ("canceled", "cancelled", "not_matched", "expired"):
+                                no_result.status = ExecutionStatus.CANCELLED
+                                no_result.filled_size = Decimal("0")
+                                self._update_order_status(no_result.order_id, "cancelled", 0)
+                                no_needs_handling = False
+                            else:
+                                resolved = False  # Still pending
+                        except Exception as e:
+                            log.debug("Failed to check NO order status", error=str(e))
+                            resolved = False
+                    
+                    # Exit early if both orders resolved
+                    if not yes_needs_handling and not no_needs_handling:
+                        log.debug("Both orders resolved, exiting progressive poll early")
+                        break
 
             # Cancel any orders still in SUBMITTED/PENDING state (shouldn't happen with FOK)
             if yes_needs_handling or no_needs_handling:
