@@ -1022,10 +1022,18 @@ class OrderExecutor:
 
         try:
             if async_client:
-                # Ensure connections are warm right before submission
+                # Only warmup if connections have been idle (cold threshold: 2 seconds)
+                # The background keepalive task runs every 3s, so connections should stay warm
+                # This avoids the 100-300ms forced warmup on every execution
+                import time
                 warmup_start = ExecutionTiming.now_ms()
-                await async_client.warmup(num_connections=2, force=True)
-                timing.warmup_ms = int(ExecutionTiming.now_ms() - warmup_start)
+                idle_time = time.time() - async_client._last_request_time
+                if idle_time > 2.0:
+                    log.debug("Connections cold, warming up", idle_seconds=f"{idle_time:.1f}s")
+                    await async_client.warmup(num_connections=2, force=True)
+                    timing.warmup_ms = int(ExecutionTiming.now_ms() - warmup_start)
+                else:
+                    timing.warmup_ms = 0  # Connections already warm
 
                 # Use optimized parallel execution: batch neg_risk + sign + submit
                 timing.order_signing_start = ExecutionTiming.now_ms()
