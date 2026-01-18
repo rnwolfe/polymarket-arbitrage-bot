@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Optional
@@ -99,7 +100,22 @@ class AsyncClobClient:
     - Native async HTTP with httpx
     - Connection pooling
     - Parallelized order submission
+    - Dedicated thread pool for signing to avoid blocking event loop
     """
+
+    # Dedicated thread pool for CPU-intensive signing operations
+    # This avoids blocking the event loop and prevents contention with other async tasks
+    _signing_executor: Optional[ThreadPoolExecutor] = None
+
+    @classmethod
+    def get_signing_executor(cls) -> ThreadPoolExecutor:
+        """Get or create the shared signing thread pool."""
+        if cls._signing_executor is None:
+            # Use 4 threads - enough for parallel signing of YES/NO orders
+            # without excessive context switching overhead
+            cls._signing_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="signer")
+            log.info("Created dedicated signing thread pool", max_workers=4)
+        return cls._signing_executor
 
     def __init__(
         self,
@@ -543,10 +559,10 @@ class AsyncClobClient:
         fee_rate = self._fee_rates.get(token_id, 0)
         t1 = time.time()
 
-        # Run signing in thread pool to not block event loop
+        # Run signing in dedicated thread pool to not block event loop
         loop = asyncio.get_event_loop()
         signed_order = await loop.run_in_executor(
-            None,
+            self.get_signing_executor(),
             self.sign_order,
             token_id,
             side,
@@ -620,11 +636,12 @@ class AsyncClobClient:
             resolved_orders.append((token_id, side, price, size, neg_risk, fee_rate))
         t1 = time.time()
 
-        # Sign all orders in parallel using thread pool
+        # Sign all orders in parallel using dedicated signing thread pool
         loop = asyncio.get_event_loop()
+        signing_executor = self.get_signing_executor()
         sign_tasks = [
             loop.run_in_executor(
-                None,
+                signing_executor,
                 self.sign_order,
                 token_id,
                 side,
