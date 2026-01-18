@@ -55,7 +55,7 @@ class Settings(BaseSettings):
         le=60.0,
     )
     min_liquidity_usd: float = Field(
-        default=10000.0,
+        default=2000.0,
         description="Minimum liquidity in USD to consider a market",
         ge=0.0,
     )
