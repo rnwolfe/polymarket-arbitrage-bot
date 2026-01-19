@@ -1300,6 +1300,52 @@ class OrderExecutor:
             total_cost = opportunity.max_trade_size * opportunity.combined_cost
             self.stats.total_volume += total_cost
             self.stats.total_profit += opportunity.expected_profit_usd
+
+            # AUTO-MERGE: Immediately convert YES+NO tokens back to USDC
+            # This releases capital instantly instead of waiting for market resolution
+            settings = get_settings()
+            if settings.auto_merge and not self.dry_run:
+                try:
+                    from rarb.executor.merge import check_and_merge_position
+                    
+                    merge_success, merged_amount, merge_error = await check_and_merge_position(
+                        condition_id=opportunity.market.condition_id,
+                        yes_filled_size=yes_result.filled_size or opportunity.max_trade_size,
+                        no_filled_size=no_result.filled_size or opportunity.max_trade_size,
+                        neg_risk=getattr(opportunity.market, 'neg_risk', False),
+                    )
+                    
+                    if merge_success:
+                        log.info(
+                            "AUTO-MERGE SUCCESSFUL - Capital released",
+                            merged_amount=f"${float(merged_amount):.2f}",
+                            market=opportunity.market.question[:40],
+                        )
+                        # Send notification about successful merge
+                        try:
+                            notifier = get_notifier()
+                            profit_pct = float(opportunity.profit_margin) * 100
+                            asyncio.create_task(notifier.send_message(
+                                f"✅ Arbitrage + Merge Complete!\n"
+                                f"💰 Merged: ${float(merged_amount):.2f}\n"
+                                f"📈 Profit: ~{profit_pct:.2f}%\n"
+                                f"📊 Market: {opportunity.market.question[:50]}"
+                            ))
+                        except Exception:
+                            pass
+                    else:
+                        log.warning(
+                            "Auto-merge failed - position held until resolution",
+                            error=merge_error,
+                            market=opportunity.market.question[:40],
+                        )
+                except Exception as e:
+                    log.error("Auto-merge error", error=str(e))
+            elif settings.auto_merge and self.dry_run:
+                log.info(
+                    "DRY RUN: Would merge positions",
+                    amount=f"${float(opportunity.max_trade_size):.2f}",
+                )
         elif yes_result.status == ExecutionStatus.FAILED and no_result.status == ExecutionStatus.FAILED:
             status = ExecutionStatus.FAILED
             self.stats.failed += 1

@@ -115,6 +115,10 @@ class Settings(BaseSettings):
         default=True,
         description="If true, simulate trades without executing",
     )
+    auto_merge: bool = Field(
+        default=True,
+        description="If true, automatically merge YES+NO tokens to USDC after successful arbitrage",
+    )
 
     # Dashboard
     dashboard_username: str = Field(
