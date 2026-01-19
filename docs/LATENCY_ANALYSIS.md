@@ -199,8 +199,67 @@ To compete with professional arbitrage bots, you would need:
 
 **For a retail bot**, the realistic goal is to catch opportunities that pro bots miss or don't find profitable enough to pursue (higher spreads, lower liquidity).
 
+## Infrastructure Recommendations
+
+### Cloud Provider Comparison (Canada Region)
+
+| Provider | Instance | Specs | Monthly Cost | Best For |
+|----------|----------|-------|--------------|----------|
+| **DigitalOcean** | CPU-Optimized | 2 vCPU / 4GB | **$42** | Budget + simplicity |
+| **Vultr** | Optimized Cloud | 2 vCPU / 8GB | **$60** | Best value/performance |
+| **AWS** | c7i.large | 2 vCPU / 4GB | **$71** | Lowest instruction latency |
+| **GCP** | c3-highcpu-4 | 4 vCPU / 8GB | **$137** | Overkill for this use case |
+
+### Recommended Setup
+
+**Best Value:** Vultr Optimized Cloud (Toronto) - $60/mo
+- Dedicated vCPU (no noisy neighbors)
+- 8GB RAM (plenty for order book processing)
+- Toronto location (closer to NYC financial infrastructure)
+
+**Budget Option:** DigitalOcean CPU-Optimized (Toronto) - $42/mo
+- Dedicated vCPU
+- 4GB RAM (sufficient)
+- Simple management
+
+### When to Consider AWS/GCP
+
+Move to AWS c7i or GCP c3 when:
+1. **Monthly trading volume > $50,000** - the extra latency savings justify cost
+2. **Need advanced networking** - VPC peering, dedicated bandwidth
+3. **Multi-region deployment** - AWS/GCP have better global presence
+4. **Compliance requirements** - enterprise audit trails
+
+For a $100-1000 bankroll test, **DigitalOcean or Vultr is the right choice**.
+
+### Server Configuration
+
+After provisioning, apply these optimizations:
+
+```bash
+# /etc/sysctl.conf - Lower TCP latency
+net.ipv4.tcp_nodelay = 1
+net.ipv4.tcp_low_latency = 1
+net.core.netdev_budget = 600
+
+# Apply without reboot
+sudo sysctl -p
+```
+
+### Region Selection
+
+| Region | Ping to Polymarket | Notes |
+|--------|-------------------|-------|
+| Toronto (TOR1) | ~15ms | Closest to NYC |
+| Montreal | ~20ms | AWS/GCP available |
+| Netherlands | ~1-2ms | Cloudflare edge, but origin may be US |
+
+**Recommendation:** Toronto for lowest latency to Polymarket's likely US-East origin servers.
+
 ## Revision History
 
 | Date | Change |
 |------|--------|
 | 2026-01-19 | Initial analysis from 126 executions |
+| 2026-01-19 | Added infrastructure recommendations |
+| 2026-01-19 | Implemented dual HTTP clients, order staggering, signing warmup |

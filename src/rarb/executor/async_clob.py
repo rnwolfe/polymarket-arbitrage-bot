@@ -106,6 +106,7 @@ class AsyncClobClient:
     # Dedicated thread pool for CPU-intensive signing operations
     # This avoids blocking the event loop and prevents contention with other async tasks
     _signing_executor: Optional[ThreadPoolExecutor] = None
+    _signing_warmed_up: bool = False
 
     @classmethod
     def get_signing_executor(cls) -> ThreadPoolExecutor:
@@ -116,6 +117,34 @@ class AsyncClobClient:
             cls._signing_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="signer")
             log.info("Created dedicated signing thread pool", max_workers=4)
         return cls._signing_executor
+
+    @classmethod
+    def warmup_signing_threads(cls) -> None:
+        """
+        Warm up signing threads by running dummy computations.
+        
+        This prevents cold-start latency spikes when the first real order comes in.
+        The threads stay warm due to Python's thread caching behavior.
+        """
+        if cls._signing_warmed_up:
+            return
+        
+        import hashlib
+        executor = cls.get_signing_executor()
+        
+        def dummy_compute():
+            """Simulate signing workload to warm up thread."""
+            for _ in range(100):
+                hashlib.sha256(b"warmup" * 100).hexdigest()
+            return True
+        
+        # Submit to all 4 threads in parallel
+        futures = [executor.submit(dummy_compute) for _ in range(4)]
+        for f in futures:
+            f.result()  # Wait for completion
+        
+        cls._signing_warmed_up = True
+        log.info("Signing thread pool warmed up")
 
     def __init__(
         self,
@@ -137,19 +166,32 @@ class AsyncClobClient:
         self.host = host.rstrip("/")
         self.proxy_url = proxy_url
 
-        # Async HTTP client with connection pooling
-        # Use higher connection limits for parallel requests
-        limits = httpx.Limits(max_keepalive_connections=10, max_connections=20)
+        # Async HTTP clients with connection pooling
+        # Use TWO separate clients to avoid head-of-line blocking when submitting
+        # YES and NO orders in parallel. Each client maintains its own connection pool.
+        limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
         transport = None
+        transport2 = None
         if proxy_url:
             transport = httpx.AsyncHTTPTransport(proxy=proxy_url, limits=limits)
+            transport2 = httpx.AsyncHTTPTransport(proxy=proxy_url, limits=limits)
 
+        # Primary client (used for YES orders and general requests)
         self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, connect=10.0),  # Increased timeout for slow proxy
+            timeout=httpx.Timeout(30.0, connect=10.0),
             transport=transport,
             http2=False,  # HTTP/1.1 works better through SOCKS5 proxy
             limits=limits,
         )
+        
+        # Secondary client (used for NO orders to avoid head-of-line blocking)
+        self._client2 = httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=10.0),
+            transport=transport2,
+            http2=False,
+            limits=limits,
+        )
+        
         self._warmed_up = False
 
         # Cache for tick sizes, neg_risk status, and fee rates
@@ -164,33 +206,39 @@ class AsyncClobClient:
 
     async def warmup(self, num_connections: int = 2, force: bool = False):
         """
-        Warm up the connection pool by making parallel requests.
+        Warm up both connection pools by making parallel requests.
 
         We need multiple connections warm for parallel order submission.
         Each parallel request needs its own connection to avoid head-of-line blocking.
 
         Args:
-            num_connections: Number of parallel connections to establish
+            num_connections: Number of parallel connections to establish per client
             force: If True, warmup even if already done (for keep-alive refresh)
         """
         if self._warmed_up and not force:
             return
         try:
             t0 = time.time()
-            # Make parallel GET requests to establish multiple connections
-            # This ensures both connections are ready for parallel POST orders
+            # Make parallel GET requests on BOTH clients to establish connections
+            # This ensures both YES and NO order paths are ready
             warmup_tasks = [
                 self._client.get(f"{self.host}/tick-sizes")
+                for _ in range(num_connections)
+            ] + [
+                self._client2.get(f"{self.host}/tick-sizes")
                 for _ in range(num_connections)
             ]
             await asyncio.gather(*warmup_tasks)
             elapsed = int((time.time() - t0) * 1000)
             self._last_request_time = time.time()
             if not self._warmed_up:
-                log.info("Connection warmup complete", elapsed_ms=elapsed, connections=num_connections)
+                log.info("Connection warmup complete (both clients)", elapsed_ms=elapsed, connections=num_connections * 2)
             else:
-                log.info("Connection keep-alive refresh", elapsed_ms=elapsed, connections=num_connections)
+                log.info("Connection keep-alive refresh", elapsed_ms=elapsed, connections=num_connections * 2)
             self._warmed_up = True
+            
+            # Also warm up signing threads
+            self.warmup_signing_threads()
         except Exception as e:
             log.warning("Connection warmup failed", error=str(e))
 
@@ -215,15 +263,15 @@ class AsyncClobClient:
                 # Only refresh if we haven't made a request recently
                 idle_time = time.time() - self._last_request_time
                 if idle_time >= self._keepalive_interval * 0.8:  # 80% of interval
-                    # Lightweight parallel pings to keep both connections warm
+                    # Lightweight parallel pings to keep BOTH clients warm
                     t0 = time.time()
                     await asyncio.gather(
                         self._client.get(f"{self.host}/tick-sizes"),
-                        self._client.get(f"{self.host}/tick-sizes"),
+                        self._client2.get(f"{self.host}/tick-sizes"),
                     )
                     elapsed = int((time.time() - t0) * 1000)
                     self._last_request_time = time.time()
-                    log.info("Connection keep-alive ping", elapsed_ms=elapsed)
+                    log.debug("Connection keep-alive ping (both clients)", elapsed_ms=elapsed)
             except asyncio.CancelledError:
                 log.info("Connection keep-alive task stopped")
                 break
@@ -242,9 +290,10 @@ class AsyncClobClient:
             self._keepalive_task.cancel()
 
     async def close(self):
-        """Close the HTTP client and stop background tasks."""
+        """Close both HTTP clients and stop background tasks."""
         self.stop_keepalive()
         await self._client.aclose()
+        await self._client2.aclose()
 
     async def get_neg_risk(self, token_id: str) -> bool:
         """
@@ -525,6 +574,42 @@ class AsyncClobClient:
 
         return response.json()
 
+    async def _post_order_with_client(
+        self,
+        signed_order: SignedOrder,
+        client: httpx.AsyncClient,
+        order_type: str = "GTC",
+    ) -> dict[str, Any]:
+        """
+        Submit a signed order using a specific HTTP client.
+        
+        This allows using separate clients for YES vs NO orders to avoid
+        head-of-line blocking.
+        """
+        t0 = time.time()
+        path = "/order"
+        body = {
+            "order": signed_order.to_dict(),
+            "owner": self.api_key,
+            "orderType": order_type,
+        }
+
+        body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+        headers = self._get_l2_headers("POST", path, body_str)
+
+        response = await client.post(
+            f"{self.host}{path}",
+            headers=headers,
+            content=body_str,
+        )
+        self._last_request_time = time.time()
+
+        if response.status_code != 200:
+            error_text = response.text
+            raise Exception(f"Order failed: {response.status_code} - {error_text}")
+
+        return response.json()
+
     async def submit_order(
         self,
         token_id: str,
@@ -655,21 +740,27 @@ class AsyncClobClient:
         signed_orders = await asyncio.gather(*sign_tasks)
         t2 = time.time()
 
-        # Submit all orders in parallel with individual timing
-        async def timed_post(signed_order: SignedOrder, idx: int) -> tuple[Any, int]:
-            """Submit order and return result with timing."""
+        # Submit orders using SEPARATE HTTP clients to avoid head-of-line blocking
+        # Also stagger by 15ms to let first order clear Polymarket's queue
+        async def timed_post(signed_order: SignedOrder, idx: int, client: httpx.AsyncClient, stagger_ms: int = 0) -> tuple[Any, int]:
+            """Submit order using specified client and return result with timing."""
+            if stagger_ms > 0:
+                await asyncio.sleep(stagger_ms / 1000.0)
             start = time.time()
             try:
-                result = await self.post_order(signed_order, order_type=order_type)
+                result = await self._post_order_with_client(signed_order, client, order_type=order_type)
             except Exception as e:
                 result = e
             elapsed_ms = int((time.time() - start) * 1000)
             return result, elapsed_ms
 
-        post_tasks = [
-            timed_post(signed_order, idx)
-            for idx, signed_order in enumerate(signed_orders)
-        ]
+        # Use client1 for first order (YES), client2 for second order (NO)
+        # Stagger second order by 15ms to avoid Polymarket queue contention
+        post_tasks = []
+        for idx, signed_order in enumerate(signed_orders):
+            client = self._client if idx == 0 else self._client2
+            stagger = 0 if idx == 0 else 15  # 15ms stagger for second order
+            post_tasks.append(timed_post(signed_order, idx, client, stagger))
 
         timed_results = await asyncio.gather(*post_tasks, return_exceptions=True)
         t3 = time.time()
