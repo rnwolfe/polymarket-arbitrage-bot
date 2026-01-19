@@ -315,6 +315,21 @@ CREATE TABLE IF NOT EXISTS merges (
     error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_merges_timestamp ON merges(timestamp);
+
+-- Balance history for TRUE P&L tracking (ground truth)
+-- Records wallet balance at key moments to calculate actual gains/losses
+CREATE TABLE IF NOT EXISTS balance_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    usdc_balance REAL NOT NULL,
+    positions_value REAL DEFAULT 0,
+    total_value REAL NOT NULL,
+    source TEXT NOT NULL,  -- 'startup', 'periodic', 'post_trade', 'manual'
+    notes TEXT,
+    session_id TEXT  -- Links balance records to a bot session
+);
+CREATE INDEX IF NOT EXISTS idx_balance_history_timestamp ON balance_history(timestamp);
+CREATE INDEX IF NOT EXISTS idx_balance_history_source ON balance_history(source);
 """
 
 

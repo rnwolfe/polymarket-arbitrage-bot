@@ -14,6 +14,7 @@ from rarb.config import get_settings
 from rarb.data.database import init_async_db
 from rarb.data.repositories import (
     AlertRepository,
+    BalanceHistoryRepository,
     ClosedPositionRepository,
     ExecutionRepository,
     MinuteStatsRepository,
@@ -285,7 +286,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/pnl")
     async def get_pnl(username: str = Depends(verify_credentials)):
-        """Get profit/loss summary."""
+        """Get profit/loss summary including TRUE P&L from balance history."""
         daily = await TradeRepository.get_daily_summary(
             datetime.now().strftime("%Y-%m-%d")
         )
@@ -299,6 +300,9 @@ def create_app() -> FastAPI:
 
         # Get realized profit from closed positions
         closed_summary = await ClosedPositionRepository.get_profit_summary()
+        
+        # Get TRUE P&L from balance history (the irrefutable ground truth)
+        true_pnl_data = await BalanceHistoryRepository.get_true_pnl()
 
         return {
             "daily": daily,
@@ -313,6 +317,8 @@ def create_app() -> FastAPI:
                 "total_cost": closed_summary.get("total_cost_basis") or 0,
                 "total_value": closed_summary.get("total_realized_value") or 0,
             },
+            # TRUE P&L - this is the source of truth
+            "true_pnl": true_pnl_data,
         }
 
     @app.get("/api/alerts")

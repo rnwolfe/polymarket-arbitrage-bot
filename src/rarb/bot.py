@@ -269,6 +269,9 @@ class RealtimeArbitrageBot:
         # Cached USDC balance (updated periodically and after trades)
         self._cached_balance: Decimal = Decimal("0")
         self._balance_lock = asyncio.Lock()
+        
+        # Session ID for linking balance history records
+        self._session_id: Optional[str] = None
 
     async def _on_markets_loaded(self, markets: list) -> None:
         """
@@ -686,6 +689,62 @@ class RealtimeArbitrageBot:
             except Exception as e:
                 log.error("Balance refresh loop error", error=str(e))
 
+    async def _record_startup_balance(self) -> None:
+        """Record the initial balance at bot startup for TRUE P&L tracking.
+        
+        This is the source of truth for calculating actual gains/losses.
+        Money should NEVER be invisible - this ensures we always know
+        where we started from.
+        """
+        from datetime import timezone
+        from uuid import uuid4
+        from rarb.data.repositories import BalanceHistoryRepository
+        from rarb.tracking.portfolio import PortfolioTracker
+
+        try:
+            tracker = PortfolioTracker()
+            balances = await tracker.get_current_balances()
+            usdc_balance = float(balances.get("polymarket_usdc", 0))
+            
+            # Get positions value
+            positions_value = 0.0
+            try:
+                async_client = await self.executor._ensure_async_client()
+                if async_client:
+                    positions = await async_client.get_positions()
+                    for p in positions:
+                        size = float(p.get("size", 0) or 0)
+                        cur_price = float(p.get("curPrice", 0) or 0)
+                        positions_value += size * cur_price
+            except Exception as e:
+                log.debug("Failed to fetch positions for startup balance", error=str(e))
+            
+            total_value = usdc_balance + positions_value
+            session_id = str(uuid4())[:8]  # Short session ID
+            self._session_id = session_id  # Store for linking future records
+            
+            await BalanceHistoryRepository.insert(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                usdc_balance=usdc_balance,
+                positions_value=positions_value,
+                total_value=total_value,
+                source="startup",
+                notes=f"Bot started in {'DRY RUN' if get_settings().dry_run else 'LIVE'} mode",
+                session_id=session_id,
+            )
+            
+            log.info(
+                "Startup balance recorded - THIS IS YOUR P&L BASELINE",
+                usdc=f"${usdc_balance:.2f}",
+                positions=f"${positions_value:.2f}",
+                total=f"${total_value:.2f}",
+                session_id=session_id,
+            )
+            
+        except Exception as e:
+            log.error("CRITICAL: Failed to record startup balance", error=str(e))
+            raise
+
     async def run(self) -> None:
         """Run the real-time bot."""
         settings = get_settings()
@@ -710,6 +769,15 @@ class RealtimeArbitrageBot:
             await notifier.notify_startup(mode=mode)
         except Exception as e:
             log.debug("Startup notification failed", error=str(e))
+
+        # CRITICAL: Capture initial balance for TRUE P&L tracking
+        # This is the ground truth - all P&L calculations should reference this
+        if not settings.dry_run:
+            try:
+                await self._record_startup_balance()
+                log.info("Initial balance captured for P&L tracking")
+            except Exception as e:
+                log.error("CRITICAL: Failed to capture initial balance", error=str(e))
 
         # Start background tasks
         if not settings.dry_run:

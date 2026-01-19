@@ -1002,14 +1002,56 @@
                 const daily = data.daily;
                 const allTime = data.all_time;
                 const realized = data.realized || {};
+                const truePnl = data.true_pnl || {};
+
+                // TRUE P&L is the source of truth - show it prominently
+                let truePnlHtml = '';
+                if (truePnl.has_data) {
+                    const truePnlValue = truePnl.true_pnl || 0;
+                    const truePnlPct = truePnl.true_pnl_pct || 0;
+                    const truePnlColor = truePnlValue >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+                    const truePnlSign = truePnlValue >= 0 ? '+' : '';
+                    const isSignificantLoss = truePnlValue < -10; // More than $10 loss
+                    
+                    truePnlHtml = `
+                        <div style="background: ${isSignificantLoss ? 'rgba(239, 68, 68, 0.15)' : 'rgba(255,255,255,0.03)'}; 
+                                    border: 1px solid ${isSignificantLoss ? 'var(--accent-red)' : 'rgba(255,255,255,0.1)'}; 
+                                    border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+                            <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px;">
+                                ${isSignificantLoss ? '⚠️ ' : ''}TRUE P&L (Balance Change)
+                            </div>
+                            <div style="font-size: 1.75rem; font-weight: 700; color: ${truePnlColor};">
+                                ${truePnlSign}$${truePnlValue.toFixed(2)}
+                            </div>
+                            <div style="font-size: 0.8rem; color: ${truePnlColor};">
+                                ${truePnlSign}${truePnlPct.toFixed(1)}% from $${truePnl.initial_balance?.toFixed(2) || '?'}
+                            </div>
+                            ${isSignificantLoss ? `
+                            <div style="font-size: 0.75rem; color: var(--accent-red); margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(239, 68, 68, 0.3);">
+                                This is your actual wallet balance change - the ground truth.
+                            </div>
+                            ` : ''}
+                        </div>
+                    `;
+                } else {
+                    truePnlHtml = `
+                        <div style="background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.3); 
+                                    border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+                            <div style="font-size: 0.8rem; color: var(--accent-yellow);">
+                                ⚠️ No balance history yet. TRUE P&L tracking will start on next bot restart.
+                            </div>
+                        </div>
+                    `;
+                }
 
                 const realizedPnl = realized.total_pnl || 0;
                 const pnlColor = realizedPnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
                 const pnlSign = realizedPnl >= 0 ? '+' : '';
 
                 document.getElementById('pnl-content').innerHTML = `
-                    <div class="stat-value" style="color: ${pnlColor};">${pnlSign}$${realizedPnl.toFixed(2)}</div>
-                    <div class="stat-label" style="margin-bottom: 12px;">Realized P&L</div>
+                    ${truePnlHtml}
+                    <div class="stat-value" style="color: ${pnlColor}; font-size: 1.25rem;">${pnlSign}$${realizedPnl.toFixed(2)}</div>
+                    <div class="stat-label" style="margin-bottom: 12px;">Tracked Positions P&L</div>
                     <div class="stat-row">
                         <span>Winning Positions</span>
                         <span class="positive">${realized.winning_positions || 0}</span>

@@ -1156,3 +1156,166 @@ class MergeRepository:
             )
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+
+class BalanceHistoryRepository:
+    """Repository for balance history tracking - the source of truth for P&L.
+    
+    This tracks actual wallet balances over time, providing irrefutable
+    proof of gains/losses regardless of what individual transaction
+    records may or may not have captured.
+    """
+
+    @staticmethod
+    async def insert(
+        timestamp: str,
+        usdc_balance: float,
+        positions_value: float,
+        total_value: float,
+        source: str,
+        notes: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> int:
+        """Record a balance snapshot.
+        
+        Args:
+            timestamp: ISO format timestamp
+            usdc_balance: Current USDC balance
+            positions_value: Value of open positions
+            total_value: Total value (USDC + positions)
+            source: One of 'startup', 'periodic', 'post_trade', 'manual'
+            notes: Optional notes about this snapshot
+            session_id: Optional session ID to link snapshots
+            
+        Returns:
+            Row ID of inserted record
+        """
+        async with get_async_db() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO balance_history 
+                    (timestamp, usdc_balance, positions_value, total_value, source, notes, session_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (timestamp, usdc_balance, positions_value, total_value, source, notes, session_id),
+            )
+            await conn.commit()
+            return cursor.lastrowid or 0
+
+    @staticmethod
+    async def get_initial_balance(session_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+        """Get the initial balance record (first 'startup' entry).
+        
+        If session_id is provided, gets the startup balance for that session.
+        Otherwise gets the oldest startup record.
+        """
+        async with get_async_db() as conn:
+            if session_id:
+                cursor = await conn.execute(
+                    """
+                    SELECT * FROM balance_history 
+                    WHERE source = 'startup' AND session_id = ?
+                    ORDER BY timestamp ASC LIMIT 1
+                    """,
+                    (session_id,),
+                )
+            else:
+                cursor = await conn.execute(
+                    """
+                    SELECT * FROM balance_history 
+                    WHERE source = 'startup'
+                    ORDER BY timestamp ASC LIMIT 1
+                    """
+                )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    async def get_latest_balance() -> Optional[dict[str, Any]]:
+        """Get the most recent balance record."""
+        async with get_async_db() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM balance_history ORDER BY id DESC LIMIT 1"
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    async def get_true_pnl() -> dict[str, Any]:
+        """Calculate TRUE P&L based on balance history.
+        
+        Returns:
+            Dict with:
+                - initial_balance: First recorded balance
+                - current_balance: Most recent balance
+                - true_pnl: current - initial (the irrefutable truth)
+                - true_pnl_pct: Percentage change
+                - has_data: Whether we have enough data to calculate
+        """
+        async with get_async_db() as conn:
+            # Get first startup balance
+            cursor = await conn.execute(
+                """
+                SELECT total_value, timestamp FROM balance_history 
+                WHERE source = 'startup'
+                ORDER BY timestamp ASC LIMIT 1
+                """
+            )
+            initial = await cursor.fetchone()
+            
+            # Get most recent balance
+            cursor = await conn.execute(
+                "SELECT total_value, timestamp FROM balance_history ORDER BY id DESC LIMIT 1"
+            )
+            current = await cursor.fetchone()
+            
+            if not initial or not current:
+                return {
+                    "has_data": False,
+                    "initial_balance": None,
+                    "current_balance": None,
+                    "true_pnl": None,
+                    "true_pnl_pct": None,
+                }
+            
+            initial_value = initial["total_value"]
+            current_value = current["total_value"]
+            true_pnl = current_value - initial_value
+            true_pnl_pct = (true_pnl / initial_value * 100) if initial_value > 0 else 0
+            
+            return {
+                "has_data": True,
+                "initial_balance": initial_value,
+                "initial_timestamp": initial["timestamp"],
+                "current_balance": current_value,
+                "current_timestamp": current["timestamp"],
+                "true_pnl": true_pnl,
+                "true_pnl_pct": true_pnl_pct,
+            }
+
+    @staticmethod
+    async def get_recent(limit: int = 100) -> list[dict[str, Any]]:
+        """Get recent balance history records."""
+        async with get_async_db() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM balance_history ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def get_balance_chart_data(hours: int = 24) -> list[dict[str, Any]]:
+        """Get balance history for charting over the last N hours."""
+        async with get_async_db() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT timestamp, usdc_balance, positions_value, total_value, source
+                FROM balance_history
+                WHERE timestamp >= datetime('now', ? || ' hours')
+                ORDER BY timestamp ASC
+                """,
+                (f"-{hours}",),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]

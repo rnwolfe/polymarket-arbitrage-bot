@@ -566,9 +566,9 @@ class OrderExecutor:
                         loss=f"${loss:.2f}",
                     )
 
-                    # Record closed position in database
+                    # Record closed position in database - CRITICAL: must await to ensure loss is tracked
                     try:
-                        asyncio.create_task(ClosedPositionRepository.insert(
+                        await ClosedPositionRepository.insert(
                             timestamp=datetime.now(timezone.utc).isoformat(),
                             market_title=market_name[:100],
                             outcome="unknown",  # We don't have YES/NO info here
@@ -581,9 +581,20 @@ class OrderExecutor:
                             realized_pnl=-loss,
                             status="SOLD",
                             redeemed=False,
-                        ))
+                        )
+                        log.info(
+                            "Loss recorded to database",
+                            loss=f"${loss:.2f}",
+                            token_id=token_id[:16],
+                        )
                     except Exception as e:
-                        log.debug("Failed to record closed position", error=str(e))
+                        # CRITICAL: Log at error level - money should never be invisible
+                        log.error(
+                            "CRITICAL: Failed to record loss in database - money is invisible!",
+                            loss=f"${loss:.2f}",
+                            token_id=token_id[:16],
+                            error=str(e),
+                        )
 
                     # Send notification about unwind
                     try:
@@ -884,8 +895,11 @@ class OrderExecutor:
 
         self._execution_history.append(result)
 
-        # Save to database (non-blocking)
-        asyncio.create_task(self._save_execution_to_db(result))
+        # Save to database - CRITICAL: await to ensure execution is tracked
+        try:
+            await self._save_execution_to_db(result)
+        except Exception as e:
+            log.error("CRITICAL: Failed to save execution to database", error=str(e))
 
         # Log trades
         self._log_trades(result)
@@ -1411,8 +1425,11 @@ class OrderExecutor:
 
         self._execution_history.append(result)
 
-        # Save to database (non-blocking)
-        asyncio.create_task(self._save_execution_to_db(result))
+        # Save to database - CRITICAL: await to ensure execution is tracked
+        try:
+            await self._save_execution_to_db(result)
+        except Exception as e:
+            log.error("CRITICAL: Failed to save execution to database", error=str(e))
 
         # Log trades
         self._log_trades(result)
