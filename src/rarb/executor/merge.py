@@ -215,6 +215,9 @@ async def check_and_merge_position(
     yes_filled_size: Decimal,
     no_filled_size: Decimal,
     neg_risk: bool = False,
+    market_title: str = "",
+    combined_cost: Optional[Decimal] = None,
+    profit_margin: Optional[Decimal] = None,
 ) -> Tuple[bool, Decimal, Optional[str]]:
     """
     Check if we have matching YES/NO positions and merge them.
@@ -226,10 +229,15 @@ async def check_and_merge_position(
         yes_filled_size: Size of YES tokens acquired
         no_filled_size: Size of NO tokens acquired
         neg_risk: Whether this is a neg_risk market
+        market_title: Market question/title for logging
+        combined_cost: Combined cost of YES+NO (for P&L tracking)
+        profit_margin: Expected profit margin (for P&L tracking)
 
     Returns:
         Tuple of (success, amount_merged, error_message)
     """
+    from datetime import datetime, timezone
+    
     # Only merge the matched amount (minimum of both sides)
     merge_amount = min(yes_filled_size, no_filled_size)
     
@@ -245,7 +253,34 @@ async def check_and_merge_position(
         no_size=f"{no_filled_size:.4f}",
     )
     
+    settings = get_settings()
     success, error = await merge_positions(condition_id, merge_amount, neg_risk)
+    
+    # Calculate profit for this merge
+    profit_usd = None
+    if profit_margin is not None:
+        # Profit = merge_amount * profit_margin (since $1 payout per share)
+        profit_usd = float(merge_amount * profit_margin)
+    
+    # Record merge in database
+    try:
+        from rarb.data.repositories import MergeRepository
+        
+        await MergeRepository.insert(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            condition_id=condition_id,
+            market_title=market_title[:100] if market_title else "",
+            amount=float(merge_amount),
+            profit_usd=profit_usd,
+            combined_cost=float(combined_cost) if combined_cost else None,
+            tx_hash=None,  # TODO: Extract from receipt
+            gas_used=None,  # TODO: Extract from receipt
+            status="success" if success else "failed",
+            error=error if not success else None,
+        )
+        log.debug("Merge recorded in database", success=success)
+    except Exception as e:
+        log.debug("Failed to record merge in database", error=str(e))
     
     if success:
         return True, merge_amount, None

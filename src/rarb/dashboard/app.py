@@ -412,6 +412,50 @@ def create_app() -> FastAPI:
             log.error("Redemption failed", error=str(e))
             return {"error": str(e), "redeemed": 0}
 
+    @app.get("/api/merges")
+    async def get_merges(
+        limit: int = 50,
+        offset: int = 0,
+        username: str = Depends(verify_credentials),
+    ):
+        """Get merge transaction history."""
+        from rarb.data.repositories import MergeRepository
+
+        try:
+            merges = await MergeRepository.get_recent(limit=limit, offset=offset)
+            total = await MergeRepository.get_total_count()
+            summary = await MergeRepository.get_summary()
+
+            return {
+                "merges": [
+                    {
+                        "timestamp": m.get("timestamp", ""),
+                        "market": m.get("market_title", "")[:50],
+                        "amount": float(m.get("amount", 0)),
+                        "profit_usd": float(m.get("profit_usd", 0) or 0),
+                        "combined_cost": float(m.get("combined_cost", 0) or 0),
+                        "tx_hash": m.get("tx_hash", ""),
+                        "status": m.get("status", ""),
+                        "error": m.get("error", ""),
+                    }
+                    for m in merges
+                ],
+                "count": len(merges),
+                "total": total,
+                "offset": offset,
+                "has_more": offset + len(merges) < total,
+                "summary": {
+                    "total_merges": summary.get("total_merges", 0) or 0,
+                    "successful": summary.get("successful", 0) or 0,
+                    "failed": summary.get("failed", 0) or 0,
+                    "total_merged_usd": float(summary.get("total_merged_usd", 0) or 0),
+                    "total_profit_usd": float(summary.get("total_profit_usd", 0) or 0),
+                },
+            }
+        except Exception as e:
+            log.error("Failed to get merges", error=str(e))
+            return {"error": str(e), "merges": [], "total": 0, "summary": {}}
+
     @app.get("/api/orders")
     async def get_orders(
         limit: int = 50,

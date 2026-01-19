@@ -299,6 +299,22 @@ CREATE INDEX IF NOT EXISTS idx_closed_positions_timestamp ON closed_positions(ti
 CREATE INDEX IF NOT EXISTS idx_near_miss_alerts_timestamp ON near_miss_alerts(timestamp);
 CREATE INDEX IF NOT EXISTS idx_stats_history_hour ON stats_history(hour);
 CREATE INDEX IF NOT EXISTS idx_price_updates_minute ON price_updates_minute(minute);
+
+-- Merge transactions (for tracking auto-merges after arbitrage)
+CREATE TABLE IF NOT EXISTS merges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    condition_id TEXT NOT NULL,
+    market_title TEXT,
+    amount REAL NOT NULL,
+    profit_usd REAL,
+    combined_cost REAL,
+    tx_hash TEXT,
+    gas_used INTEGER,
+    status TEXT DEFAULT 'success',
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_merges_timestamp ON merges(timestamp);
 """
 
 

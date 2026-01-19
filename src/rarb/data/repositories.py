@@ -1050,3 +1050,109 @@ class NearMissAlertRepository:
             )
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+
+class MergeRepository:
+    """Repository for merge transactions (auto-merge after arbitrage)."""
+
+    MAX_MERGES = 500  # Keep last 500 merge records
+
+    @staticmethod
+    async def insert(
+        timestamp: str,
+        condition_id: str,
+        market_title: str,
+        amount: float,
+        profit_usd: Optional[float] = None,
+        combined_cost: Optional[float] = None,
+        tx_hash: Optional[str] = None,
+        gas_used: Optional[int] = None,
+        status: str = "success",
+        error: Optional[str] = None,
+    ) -> int:
+        """Insert a new merge record and cleanup old ones."""
+        async with get_async_db() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO merges (
+                    timestamp, condition_id, market_title, amount,
+                    profit_usd, combined_cost, tx_hash, gas_used, status, error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    timestamp, condition_id, market_title, amount,
+                    profit_usd, combined_cost, tx_hash, gas_used, status, error
+                ),
+            )
+            merge_id = cursor.lastrowid or 0
+
+            # Cleanup old entries
+            await conn.execute(
+                """
+                DELETE FROM merges WHERE id NOT IN (
+                    SELECT id FROM merges ORDER BY id DESC LIMIT ?
+                )
+                """,
+                (MergeRepository.MAX_MERGES,),
+            )
+
+            return merge_id
+
+    @staticmethod
+    async def get_recent(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        """Get recent merge transactions with pagination."""
+        async with get_async_db() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM merges ORDER BY id DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    async def get_total_count() -> int:
+        """Get total count of merge transactions."""
+        async with get_async_db() as conn:
+            cursor = await conn.execute("SELECT COUNT(*) as count FROM merges")
+            row = await cursor.fetchone()
+            return row["count"] if row else 0
+
+    @staticmethod
+    async def get_summary() -> dict[str, Any]:
+        """Get summary of merge statistics."""
+        async with get_async_db() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT
+                    COUNT(*) as total_merges,
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successful,
+                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) as failed,
+                    SUM(CASE WHEN status = 'success' THEN amount ELSE 0 END) as total_merged_usd,
+                    SUM(CASE WHEN status = 'success' THEN profit_usd ELSE 0 END) as total_profit_usd,
+                    SUM(gas_used) as total_gas_used
+                FROM merges
+                """
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else {}
+
+    @staticmethod
+    async def get_daily_stats(days: int = 7) -> list[dict[str, Any]]:
+        """Get daily merge stats for charts."""
+        async with get_async_db() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT
+                    DATE(timestamp) as date,
+                    COUNT(*) as merge_count,
+                    SUM(CASE WHEN status = 'success' THEN amount ELSE 0 END) as merged_usd,
+                    SUM(CASE WHEN status = 'success' THEN profit_usd ELSE 0 END) as profit_usd
+                FROM merges
+                WHERE timestamp >= DATE('now', ? || ' days')
+                GROUP BY DATE(timestamp)
+                ORDER BY date ASC
+                """,
+                (f"-{days}",),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]

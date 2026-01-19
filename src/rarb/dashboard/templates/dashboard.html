@@ -749,6 +749,27 @@
             </div>
         </div>
 
+        <!-- Auto-Merges Section -->
+        <div class="card" style="margin-bottom: 24px;">
+            <div class="card-header">
+                <span class="card-title">🔄 Auto-Merges (Instant Capital Release)</span>
+                <span id="merges-count" class="refresh-indicator">-</span>
+            </div>
+            <div id="merges-summary" style="padding: 12px; background: #1a1f2e; border-radius: 4px; margin-bottom: 12px;">
+                <div style="display: flex; gap: 24px; flex-wrap: wrap;">
+                    <div><strong>Total Merged:</strong> <span id="merge-total-usd">$0.00</span></div>
+                    <div><strong>Total Profit:</strong> <span id="merge-total-profit" style="color: #00d97e;">$0.00</span></div>
+                    <div><strong>Success Rate:</strong> <span id="merge-success-rate">0%</span></div>
+                </div>
+            </div>
+            <div class="table-container" id="merges-container">
+                <div class="empty-state">No merges yet</div>
+            </div>
+            <div id="merges-pagination" style="margin-top: 12px; text-align: center; display: none;">
+                <button class="btn" id="merges-load-more">Load More</button>
+            </div>
+        </div>
+
         <!-- Orders Section -->
         <div class="card" style="margin-bottom: 24px;">
             <div class="card-header">
@@ -1862,6 +1883,91 @@
         document.getElementById('trades-load-more').addEventListener('click', () => fetchTrades(true));
         document.getElementById('redeemed-history-load-more').addEventListener('click', () => fetchRedeemedHistory(true));
         document.getElementById('near-miss-load-more').addEventListener('click', () => fetchNearMissAlerts(true));
+        document.getElementById('merges-load-more').addEventListener('click', () => fetchMerges(true));
+
+        // Merges data and fetch function
+        let mergesOffset = 0;
+        let allMerges = [];
+
+        async function fetchMerges(loadMore = false) {
+            try {
+                if (!loadMore) {
+                    mergesOffset = 0;
+                    allMerges = [];
+                }
+
+                const resp = await fetch(`/api/merges?limit=20&offset=${mergesOffset}`);
+                const data = await resp.json();
+
+                document.getElementById('merges-count').textContent = `${data.total || 0} merges`;
+
+                // Update summary
+                if (data.summary) {
+                    document.getElementById('merge-total-usd').textContent = `$${data.summary.total_merged_usd?.toFixed(2) || '0.00'}`;
+                    document.getElementById('merge-total-profit').textContent = `$${data.summary.total_profit_usd?.toFixed(2) || '0.00'}`;
+                    const successRate = data.summary.total_merges > 0 
+                        ? ((data.summary.successful / data.summary.total_merges) * 100).toFixed(0) 
+                        : 0;
+                    document.getElementById('merge-success-rate').textContent = `${successRate}%`;
+                }
+
+                if (loadMore) {
+                    allMerges = [...allMerges, ...data.merges];
+                } else {
+                    allMerges = data.merges || [];
+                }
+                mergesOffset += data.count || 0;
+
+                const pagination = document.getElementById('merges-pagination');
+                pagination.style.display = data.has_more ? 'block' : 'none';
+
+                if (allMerges.length === 0) {
+                    document.getElementById('merges-container').innerHTML = `
+                        <div class="empty-state">No auto-merges yet. Enable AUTO_MERGE=true to automatically convert YES+NO tokens to USDC after arbitrage.</div>
+                    `;
+                } else {
+                    document.getElementById('merges-container').innerHTML = renderMergesTable(allMerges);
+                }
+            } catch (e) {
+                console.error('Merges fetch error:', e);
+            }
+        }
+
+        function renderMergesTable(merges) {
+            let html = `<table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Market</th>
+                        <th style="text-align: right;">Merged</th>
+                        <th style="text-align: right;">Profit</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+            
+            merges.forEach(m => {
+                const date = new Date(m.timestamp);
+                const timeStr = date.toLocaleString('en-US', {
+                    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+                    hour12: true, timeZone: 'America/Los_Angeles'
+                });
+                const statusColor = m.status === 'success' ? '#00d97e' : '#ff6b6b';
+                const statusIcon = m.status === 'success' ? '✅' : '❌';
+                const profitColor = m.profit_usd >= 0 ? '#00d97e' : '#ff6b6b';
+                
+                html += `<tr>
+                    <td style="white-space: nowrap;">${timeStr}</td>
+                    <td title="${m.market}">${m.market || 'Unknown'}</td>
+                    <td style="text-align: right;">$${m.amount?.toFixed(2) || '0.00'}</td>
+                    <td style="text-align: right; color: ${profitColor};">$${m.profit_usd?.toFixed(2) || '0.00'}</td>
+                    <td style="color: ${statusColor};">${statusIcon} ${m.status || 'unknown'}</td>
+                </tr>`;
+            });
+            
+            html += '</tbody></table>';
+            return html;
+        }
 
         // Chart instances
         let priceUpdatesChart = null;
@@ -2415,6 +2521,7 @@
         fetchOrders();
         fetchPositions();
         fetchRedeemedHistory();
+        fetchMerges();
         fetchPriceUpdatesChart();
         fetchMarketsChart();
         fetchAlertsChart();
@@ -2432,6 +2539,7 @@
         setInterval(fetchOrders, 2000);      // Orders every 2s (to catch pending fills)
         setInterval(fetchPositions, 30000);  // Positions every 30s
         setInterval(() => fetchRedeemedHistory(false), 60000);  // Redeemed history every 60s
+        setInterval(() => fetchMerges(false), 30000);  // Merges every 30s
         setInterval(fetchPriceUpdatesChart, 5000);  // Price updates every 5s (minute-level)
         setInterval(fetchMarketsChart, 60000);  // Markets chart every minute (hourly data)
         setInterval(fetchAlertsChart, 30000);  // Alerts chart every 30s

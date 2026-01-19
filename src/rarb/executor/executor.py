@@ -1313,6 +1313,9 @@ class OrderExecutor:
                         yes_filled_size=yes_result.filled_size or opportunity.max_trade_size,
                         no_filled_size=no_result.filled_size or opportunity.max_trade_size,
                         neg_risk=getattr(opportunity.market, 'neg_risk', False),
+                        market_title=opportunity.market.question,
+                        combined_cost=opportunity.combined_cost,
+                        profit_margin=opportunity.profit_pct,
                     )
                     
                     if merge_success:
@@ -1324,11 +1327,11 @@ class OrderExecutor:
                         # Send notification about successful merge
                         try:
                             notifier = get_notifier()
-                            profit_pct = float(opportunity.profit_margin) * 100
+                            profit_pct_display = float(opportunity.profit_pct) * 100
                             asyncio.create_task(notifier.send_message(
                                 f"✅ Arbitrage + Merge Complete!\n"
                                 f"💰 Merged: ${float(merged_amount):.2f}\n"
-                                f"📈 Profit: ~{profit_pct:.2f}%\n"
+                                f"📈 Profit: ~{profit_pct_display:.2f}%\n"
                                 f"📊 Market: {opportunity.market.question[:50]}"
                             ))
                         except Exception:
