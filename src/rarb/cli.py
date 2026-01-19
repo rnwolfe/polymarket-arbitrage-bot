@@ -83,14 +83,18 @@ def run(
     console.print(f"[dim]Max position:[/dim] ${settings.max_position_size}")
 
     # Start dashboard in background thread if requested
+    # IMPORTANT: Import dashboard module in main thread BEFORE starting background thread
+    # to avoid circular import race conditions between threads
     dashboard_thread = None
     if with_dashboard:
         actual_port = dashboard_port or settings.dashboard_port
         console.print(f"[dim]Dashboard:[/dim] http://0.0.0.0:{actual_port}")
 
+        # Pre-import in main thread to avoid race condition
+        from rarb.dashboard import run_dashboard as _run_dashboard
+
         def run_dashboard_thread() -> None:
-            from rarb.dashboard import run_dashboard
-            run_dashboard(host="0.0.0.0", port=actual_port)
+            _run_dashboard(host="0.0.0.0", port=actual_port)
 
         dashboard_thread = threading.Thread(target=run_dashboard_thread, daemon=True)
         dashboard_thread.start()
