@@ -478,7 +478,7 @@ def status() -> None:
 
         # Recent trades
         console.print("[bold cyan]Recent Trades[/bold cyan]")
-        trades = trade_log.get_trades(limit=10)
+        trades = await trade_log.get_trades(limit=10)
 
         if not trades:
             console.print("[dim]No trades recorded yet[/dim]")
@@ -509,7 +509,7 @@ def status() -> None:
 
         # Trading summary
         console.print("[bold cyan]Summary[/bold cyan]")
-        summary = trade_log.get_all_time_summary()
+        summary = await trade_log.get_all_time_summary()
 
         if summary["trade_count"] > 0:
             console.print(f"[dim]Total trades:[/dim] {summary['trade_count']}")
@@ -674,44 +674,47 @@ def trades(limit: int, platform: Optional[str]) -> None:
     """Show trade history."""
     from rarb.tracking.trades import TradeLog
 
-    trade_log = TradeLog()
-    recent = trade_log.get_trades(limit=limit, platform=platform)
+    async def _trades() -> None:
+        trade_log = TradeLog()
+        recent = await trade_log.get_trades(limit=limit, platform=platform)
 
-    if not recent:
-        console.print("\n[yellow]No trades recorded yet[/yellow]\n")
-        return
+        if not recent:
+            console.print("\n[yellow]No trades recorded yet[/yellow]\n")
+            return
 
-    table = Table(title=f"Recent Trades (showing {len(recent)})")
-    table.add_column("Time", style="dim")
-    table.add_column("Platform")
-    table.add_column("Market", max_width=30)
-    table.add_column("Action")
-    table.add_column("Price", justify="right")
-    table.add_column("Size", justify="right")
-    table.add_column("Expected P/L", justify="right")
+        table = Table(title=f"Recent Trades (showing {len(recent)})")
+        table.add_column("Time", style="dim")
+        table.add_column("Platform")
+        table.add_column("Market", max_width=30)
+        table.add_column("Action")
+        table.add_column("Price", justify="right")
+        table.add_column("Size", justify="right")
+        table.add_column("Expected P/L", justify="right")
 
-    for t in recent:
-        time_str = t.timestamp.split("T")[0] + " " + t.timestamp.split("T")[1][:8] if "T" in t.timestamp else t.timestamp
-        side_color = "green" if t.side == "buy" else "red"
-        pl_str = f"${t.profit_expected:.2f}" if t.profit_expected else "-"
+        for t in recent:
+            time_str = t.timestamp.split("T")[0] + " " + t.timestamp.split("T")[1][:8] if "T" in t.timestamp else t.timestamp
+            side_color = "green" if t.side == "buy" else "red"
+            pl_str = f"${t.profit_expected:.2f}" if t.profit_expected else "-"
 
-        table.add_row(
-            time_str,
-            t.platform,
-            t.market_name[:30],
-            f"[{side_color}]{t.side.upper()} {t.outcome.upper()}[/{side_color}]",
-            f"${t.price:.3f}",
-            f"${t.size:.2f}",
-            pl_str,
-        )
+            table.add_row(
+                time_str,
+                t.platform,
+                t.market_name[:30],
+                f"[{side_color}]{t.side.upper()} {t.outcome.upper()}[/{side_color}]",
+                f"${t.price:.3f}",
+                f"${t.size:.2f}",
+                pl_str,
+            )
 
-    console.print(table)
+        console.print(table)
 
-    # Summary
-    summary = trade_log.get_all_time_summary()
-    console.print(f"\n[dim]Total trades:[/dim] {summary['trade_count']}")
-    console.print(f"[dim]Total invested:[/dim] ${summary['total_cost']:.2f}")
-    console.print(f"[dim]Expected profit:[/dim] ${summary['expected_profit']:.2f}")
+        # Summary
+        summary = await trade_log.get_all_time_summary()
+        console.print(f"\n[dim]Total trades:[/dim] {summary['trade_count']}")
+        console.print(f"[dim]Total invested:[/dim] ${summary['total_cost']:.2f}")
+        console.print(f"[dim]Expected profit:[/dim] ${summary['expected_profit']:.2f}")
+
+    asyncio.run(_trades())
 
 
 @cli.command()
@@ -721,28 +724,31 @@ def pnl() -> None:
     from rarb.tracking.portfolio import PortfolioTracker
     from rarb.tracking.trades import TradeLog
 
-    tracker = PortfolioTracker()
-    trade_log = TradeLog()
+    async def _pnl() -> None:
+        tracker = PortfolioTracker()
+        trade_log = TradeLog()
 
-    console.print("\n[bold]Profit & Loss Summary[/bold]\n")
+        console.print("\n[bold]Profit & Loss Summary[/bold]\n")
 
-    # Today's trades
-    today_summary = trade_log.get_daily_summary()
-    console.print("[bold cyan]Today[/bold cyan]")
-    console.print(f"  Trades: {today_summary['trade_count']}")
-    console.print(f"  Cost: ${today_summary['total_cost']:.2f}")
-    console.print(f"  Expected profit: ${today_summary['expected_profit']:.2f}")
-    console.print()
+        # Today's trades
+        today_summary = await trade_log.get_daily_summary()
+        console.print("[bold cyan]Today[/bold cyan]")
+        console.print(f"  Trades: {today_summary['trade_count']}")
+        console.print(f"  Cost: ${today_summary['total_cost']:.2f}")
+        console.print(f"  Expected profit: ${today_summary['expected_profit']:.2f}")
+        console.print()
 
-    # All-time
-    all_time = trade_log.get_all_time_summary()
-    console.print("[bold cyan]All Time[/bold cyan]")
-    console.print(f"  Total trades: {all_time['trade_count']}")
-    console.print(f"  Total invested: ${all_time['total_cost']:.2f}")
-    console.print(f"  Expected profit: ${all_time['expected_profit']:.2f}")
+        # All-time
+        all_time = await trade_log.get_all_time_summary()
+        console.print("[bold cyan]All Time[/bold cyan]")
+        console.print(f"  Total trades: {all_time['trade_count']}")
+        console.print(f"  Total invested: ${all_time['total_cost']:.2f}")
+        console.print(f"  Expected profit: ${all_time['expected_profit']:.2f}")
 
-    if all_time['first_trade']:
-        console.print(f"  First trade: {all_time['first_trade'][:10]}")
+        if all_time['first_trade']:
+            console.print(f"  First trade: {all_time['first_trade'][:10]}")
+
+    asyncio.run(_pnl())
 
 
 @cli.command()
@@ -894,6 +900,164 @@ def positions() -> None:
             console.print("[dim]Run 'rarb redeem' to claim these positions[/dim]")
 
     asyncio.run(_positions())
+
+
+@cli.command()
+@click.option("--token-id", help="Specific token ID to sell (optional)")
+@click.option("--all", "sell_all", is_flag=True, help="Sell all open positions")
+@click.option("--min-value", type=float, default=0.01, help="Minimum position value to sell (default: $0.01)")
+@click.option("--dry-run/--live", default=True, help="Dry run mode (default: dry run)")
+def sell_positions(token_id: Optional[str], sell_all: bool, min_value: float, dry_run: bool) -> None:
+    """Sell open positions at market price.
+    
+    Use this to liquidate orphaned or unwanted positions.
+    By default runs in dry-run mode - use --live to actually sell.
+    """
+    setup_logging("INFO")
+
+    async def _sell() -> None:
+        import httpx
+        from rarb.executor.async_clob import create_async_clob_client
+
+        settings = get_settings()
+
+        if not settings.wallet_address:
+            console.print("[red]Error:[/red] No wallet address configured")
+            return
+
+        if not settings.private_key:
+            console.print("[red]Error:[/red] No private key configured")
+            return
+
+        console.print("\n[bold]Fetching positions...[/bold]\n")
+
+        # Get positions from data API
+        async with httpx.AsyncClient() as http_client:
+            resp = await http_client.get(
+                f"https://data-api.polymarket.com/positions?user={settings.wallet_address}"
+            )
+            positions = resp.json()
+
+        if not positions:
+            console.print("[yellow]No positions found[/yellow]")
+            return
+
+        # Filter to open positions with value
+        open_positions = []
+        for p in positions:
+            size = float(p.get("size", 0) or 0)
+            cur_price = float(p.get("curPrice", 0) or 0)
+            value = size * cur_price
+            
+            if size > 0 and not p.get("redeemable"):
+                # Filter by token_id if specified
+                if token_id and p.get("asset") != token_id:
+                    continue
+                # Filter by min value
+                if value < min_value:
+                    continue
+                open_positions.append({
+                    **p,
+                    "current_value": value,
+                })
+
+        if not open_positions:
+            console.print("[yellow]No positions match criteria[/yellow]")
+            return
+
+        # Show what we'll sell
+        table = Table(title="Positions to Sell")
+        table.add_column("Market", max_width=35)
+        table.add_column("Outcome")
+        table.add_column("Size", justify="right")
+        table.add_column("Cur Price", justify="right")
+        table.add_column("Value", justify="right")
+        table.add_column("Token ID", max_width=20)
+
+        total_value = 0
+        for p in open_positions:
+            total_value += p["current_value"]
+            table.add_row(
+                p.get("title", "Unknown")[:35],
+                p.get("outcome", "?"),
+                f"{float(p.get('size', 0)):.2f}",
+                f"${float(p.get('curPrice', 0)):.4f}",
+                f"${p['current_value']:.2f}",
+                p.get("asset", "?")[:20] + "...",
+            )
+
+        console.print(table)
+        console.print(f"\n[bold]Total value:[/bold] ${total_value:.2f}")
+        console.print(f"[bold]Positions:[/bold] {len(open_positions)}")
+
+        if dry_run:
+            console.print("\n[yellow]DRY RUN mode - no actual sales will occur[/yellow]")
+            console.print("[dim]Use --live to actually sell positions[/dim]")
+            return
+
+        if not sell_all and not token_id:
+            console.print("\n[red]Error:[/red] Specify --token-id or --all to sell")
+            return
+
+        # Confirm
+        if not click.confirm(f"\nSell {len(open_positions)} positions for ~${total_value:.2f}?"):
+            console.print("[dim]Cancelled[/dim]")
+            return
+
+        console.print("\n[bold]Selling positions...[/bold]\n")
+
+        # Create async client
+        client = await create_async_clob_client()
+
+        sold = 0
+        failed = 0
+        total_received = 0.0
+
+        for p in open_positions:
+            asset = p.get("asset")
+            size = float(p.get("size", 0))
+            cur_price = float(p.get("curPrice", 0))
+            
+            if not asset or size <= 0:
+                continue
+
+            # Sell at slightly below market to ensure fill
+            # Use 95% of current price as limit (5% slippage tolerance)
+            sell_price = max(0.001, cur_price * 0.95)
+            
+            console.print(f"Selling {size:.2f} {p.get('outcome', '?')} @ ${sell_price:.4f}...")
+
+            try:
+                result = await client.submit_order(
+                    token_id=asset,
+                    side="SELL",
+                    price=sell_price,
+                    size=size,
+                    order_type="FOK",  # Fill-or-Kill
+                )
+
+                status = result.get("status", "unknown")
+                if status in ("matched", "filled", "delayed"):
+                    sold += 1
+                    received = size * sell_price
+                    total_received += received
+                    console.print(f"  [green]✓ Sold[/green] - received ~${received:.2f}")
+                else:
+                    failed += 1
+                    console.print(f"  [red]✗ Failed[/red] - status: {status}")
+                    if result.get("errorMsg"):
+                        console.print(f"    Error: {result.get('errorMsg')}")
+
+            except Exception as e:
+                failed += 1
+                console.print(f"  [red]✗ Error:[/red] {e}")
+
+        console.print(f"\n[bold]Results:[/bold]")
+        console.print(f"  Sold: {sold}")
+        console.print(f"  Failed: {failed}")
+        console.print(f"  Received: ~${total_received:.2f}")
+
+    asyncio.run(_sell())
 
 
 @cli.command()

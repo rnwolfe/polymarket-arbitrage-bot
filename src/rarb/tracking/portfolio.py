@@ -18,6 +18,7 @@ class BalanceSnapshot:
     timestamp: str
     polymarket_usdc: float
     total_usd: float
+    kalshi_usd: float = 0.0  # Kalshi balance (if enabled)
     positions_value: float = 0.0  # Value of open positions
 
 
@@ -34,6 +35,7 @@ class PortfolioTracker:
         balances: dict[str, Any] = {
             "timestamp": datetime.now().isoformat(),
             "polymarket_usdc": 0.0,
+            "kalshi_usd": 0.0,  # Always include for CLI compatibility
             "total_usd": 0.0,
         }
 
