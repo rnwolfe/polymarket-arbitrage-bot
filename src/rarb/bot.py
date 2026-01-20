@@ -294,11 +294,12 @@ class RealtimeArbitrageBot:
         # Get or create async client
         async_client = await self.executor._ensure_async_client()
         if async_client:
-            log.info("Pre-caching neg_risk status for all tokens", count=len(token_ids))
+            log.info("Pre-caching neg_risk and fee_rates for all tokens", count=len(token_ids))
             # Run pre-fetch in background to not block WebSocket setup
             asyncio.create_task(async_client.prefetch_neg_risk(token_ids))
+            asyncio.create_task(async_client.prefetch_fee_rates(token_ids))
         else:
-            log.warning("Async CLOB client not available - skipping neg_risk pre-cache")
+            log.warning("Async CLOB client not available - skipping pre-cache")
 
     async def _save_near_miss_alert(self, alert, min_required: Decimal) -> None:
         """Save an illiquid arbitrage alert to the database."""

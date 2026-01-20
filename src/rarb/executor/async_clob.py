@@ -376,10 +376,62 @@ class AsyncClobClient:
         """
         Get the fee rate in basis points for a token.
         
-        Note: Polymarket has 0% fees on regular prediction markets.
-        Only 15-min crypto up/down markets have fees, which we don't trade.
+        Most Polymarket markets have 0% fees, but 15-min crypto up/down
+        markets have 1000 bps (10%) fees. We cache aggressively.
         """
+        # Return cached value if available (fast path)
+        if token_id in self._fee_rates:
+            return self._fee_rates[token_id]
+
+        try:
+            resp = await self._client.get(
+                f"{self.host}/fee-rate",
+                params={"tokenID": token_id},
+            )
+            self._last_request_time = time.time()
+
+            if resp.status_code == 200:
+                data = resp.json()
+                # API returns maker_fee and taker_fee, use taker for our BUY orders
+                fee_rate = data.get("taker_fee", data.get("maker_fee", 0))
+                self._fee_rates[token_id] = fee_rate
+                return fee_rate
+        except Exception as e:
+            log.warning("Failed to get fee rate", token_id=token_id[:20], error=str(e))
+
+        # Default to 0 if API call fails
+        self._fee_rates[token_id] = 0
         return 0
+
+    async def prefetch_fee_rates(self, token_ids: list[str], batch_size: int = 50) -> dict[str, int]:
+        """
+        Pre-fetch fee rates for multiple tokens in parallel.
+        Call at startup alongside prefetch_neg_risk to warm the cache.
+        """
+        tokens_to_fetch = [t for t in token_ids if t not in self._fee_rates]
+
+        if not tokens_to_fetch:
+            log.info("All fee_rates already cached", cached=len(self._fee_rates))
+            return self._fee_rates.copy()
+
+        log.info(
+            "Pre-fetching fee rates",
+            total_tokens=len(token_ids),
+            to_fetch=len(tokens_to_fetch),
+        )
+
+        t0 = time.time()
+        for i in range(0, len(tokens_to_fetch), batch_size):
+            batch = tokens_to_fetch[i:i + batch_size]
+            tasks = [self.get_fee_rate_bps(token_id) for token_id in batch]
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        log.info(
+            "Fee rate prefetch complete",
+            fetched=len(tokens_to_fetch),
+            elapsed_ms=int((time.time() - t0) * 1000),
+        )
+        return self._fee_rates.copy()
 
     def _build_hmac_signature(
         self,
@@ -606,18 +658,20 @@ class AsyncClobClient:
         """
         t0 = time.time()
 
-        # Fetch neg_risk in parallel if needed (fee_rate is always 0)
+        # Fetch neg_risk and fee_rate in parallel if needed
         fetch_tasks = []
         if neg_risk is None:
             fetch_tasks.append(self.get_neg_risk(token_id))
+        if token_id not in self._fee_rates:
+            fetch_tasks.append(self.get_fee_rate_bps(token_id))
 
         if fetch_tasks:
             await asyncio.gather(*fetch_tasks)
 
-        # Get resolved values
+        # Get resolved values from cache
         if neg_risk is None:
             neg_risk = self._neg_risk.get(token_id, False)
-        fee_rate = 0
+        fee_rate = self._fee_rates.get(token_id, 0)
         t1 = time.time()
 
         # Run signing in dedicated thread pool to not block event loop
@@ -673,13 +727,18 @@ class AsyncClobClient:
             token_id for token_id, side, price, size, neg_risk in orders if neg_risk is None
         ]
 
-        # Fetch neg_risk in parallel for all tokens (fee_rate is always 0)
+        # Fetch neg_risk and fee_rate in parallel for all tokens
         # These are cached, so subsequent calls will be instant
         fetch_tasks = []
 
         # Add neg_risk fetch tasks
         if tokens_needing_neg_risk:
             fetch_tasks.extend([self.get_neg_risk(token_id) for token_id in tokens_needing_neg_risk])
+
+        # Add fee_rate fetch tasks for tokens not yet cached
+        tokens_needing_fee = [t for t in all_token_ids if t not in self._fee_rates]
+        if tokens_needing_fee:
+            fetch_tasks.extend([self.get_fee_rate_bps(token_id) for token_id in tokens_needing_fee])
 
         # Run all fetches in parallel
         if fetch_tasks:
@@ -690,7 +749,7 @@ class AsyncClobClient:
         for token_id, side, price, size, neg_risk in orders:
             if neg_risk is None:
                 neg_risk = self._neg_risk.get(token_id, False)
-            fee_rate = 0
+            fee_rate = self._fee_rates.get(token_id, 0)
             resolved_orders.append((token_id, side, price, size, neg_risk, fee_rate))
         t1 = time.time()
 
