@@ -23,6 +23,7 @@ log = get_logger(__name__)
 # Contract addresses (Polygon Mainnet)
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 USDC_ADDRESS = "0x2791Bca1cfB2dFAa1ECe4A4E8D4eE3Bfe31c7bBe"  # USDC.e on Polygon
+NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
 
 # Minimal ABI for mergePositions
 CTF_ABI = [
@@ -46,6 +47,18 @@ CTF_ABI = [
             {"name": "id", "type": "uint256"},
         ],
         "outputs": [{"name": "", "type": "uint256"}],
+    },
+]
+
+NEG_RISK_ADAPTER_ABI = [
+    {
+        "name": "mergePositions",
+        "type": "function",
+        "inputs": [
+            {"name": "conditionId", "type": "bytes32"},
+            {"name": "amount", "type": "uint256"},
+        ],
+        "outputs": [],
     },
 ]
 
@@ -81,18 +94,6 @@ def merge_positions_sync(
         w3 = _get_web3()
         account = w3.eth.account.from_key(private_key)
         
-        ctf_contract = w3.eth.contract(
-            address=Web3.to_checksum_address(CTF_ADDRESS),
-            abi=CTF_ABI,
-        )
-
-        # Parameters for binary market
-        # parentCollectionId is 0x0 for top-level markets
-        parent_collection_id = b'\x00' * 32
-        
-        # Partition: [1, 2] for binary markets (bitmask for each outcome)
-        partition = [1, 2]
-        
         # Convert amount to USDC decimals (6)
         # Amount is the number of shares, each share represents $1 of collateral
         amount_wei = int(amount * Decimal("1000000"))
@@ -106,27 +107,64 @@ def merge_positions_sync(
         # Pad to 32 bytes if needed
         condition_id_bytes = condition_id_bytes.rjust(32, b'\x00')
 
-        log.info(
-            "Executing merge",
-            condition_id=condition_id[:20] + "...",
-            amount=f"{amount:.4f}",
-            amount_wei=amount_wei,
-        )
+        if neg_risk:
+            # Use NegRiskAdapter for neg_risk markets
+            log.info(
+                "Executing neg_risk merge via NegRiskAdapter",
+                condition_id=condition_id[:20] + "...",
+                amount=f"{amount:.4f}",
+                amount_wei=amount_wei,
+            )
+            
+            adapter_contract = w3.eth.contract(
+                address=Web3.to_checksum_address(NEG_RISK_ADAPTER),
+                abi=NEG_RISK_ADAPTER_ABI,
+            )
+            
+            tx = adapter_contract.functions.mergePositions(
+                condition_id_bytes,
+                amount_wei,
+            ).build_transaction({
+                'from': account.address,
+                'nonce': w3.eth.get_transaction_count(account.address),
+                'gas': 300000,
+                'maxFeePerGas': w3.eth.gas_price * 2,
+                'maxPriorityFeePerGas': w3.to_wei(30, 'gwei'),
+            })
+        else:
+            # Standard CTF merge for non-neg_risk markets
+            log.info(
+                "Executing standard merge via CTF",
+                condition_id=condition_id[:20] + "...",
+                amount=f"{amount:.4f}",
+                amount_wei=amount_wei,
+            )
+            
+            ctf_contract = w3.eth.contract(
+                address=Web3.to_checksum_address(CTF_ADDRESS),
+                abi=CTF_ABI,
+            )
 
-        # Build transaction
-        tx = ctf_contract.functions.mergePositions(
-            Web3.to_checksum_address(USDC_ADDRESS),
-            parent_collection_id,
-            condition_id_bytes,
-            partition,
-            amount_wei,
-        ).build_transaction({
-            'from': account.address,
-            'nonce': w3.eth.get_transaction_count(account.address),
-            'gas': 200000,
-            'maxFeePerGas': w3.eth.gas_price * 2,
-            'maxPriorityFeePerGas': w3.to_wei(30, 'gwei'),
-        })
+            # Parameters for binary market
+            # parentCollectionId is 0x0 for top-level markets
+            parent_collection_id = b'\x00' * 32
+            
+            # Partition: [1, 2] for binary markets (bitmask for each outcome)
+            partition = [1, 2]
+            
+            tx = ctf_contract.functions.mergePositions(
+                Web3.to_checksum_address(USDC_ADDRESS),
+                parent_collection_id,
+                condition_id_bytes,
+                partition,
+                amount_wei,
+            ).build_transaction({
+                'from': account.address,
+                'nonce': w3.eth.get_transaction_count(account.address),
+                'gas': 200000,
+                'maxFeePerGas': w3.eth.gas_price * 2,
+                'maxPriorityFeePerGas': w3.to_wei(30, 'gwei'),
+            })
 
         # Sign and send
         signed_tx = w3.eth.account.sign_transaction(tx, private_key)
