@@ -375,34 +375,10 @@ class AsyncClobClient:
     async def get_fee_rate_bps(self, token_id: str) -> int:
         """
         Get the fee rate in basis points for a token.
-
-        Args:
-            token_id: The token ID to get fee rate for
-
-        Returns:
-            Fee rate in basis points (e.g., 1000 = 0.1%)
+        
+        Note: Polymarket has 0% fees on regular prediction markets.
+        Only 15-min crypto up/down markets have fees, which we don't trade.
         """
-        # Return cached value if available
-        if token_id in self._fee_rates:
-            return self._fee_rates[token_id]
-
-        try:
-            resp = await self._client.get(
-                f"{self.host}/fee-rate",
-                params={"token_id": token_id},
-            )
-            self._last_request_time = time.time()
-
-            if resp.status_code == 200:
-                data = resp.json()
-                fee_rate = data.get("base_fee", 0)
-                self._fee_rates[token_id] = fee_rate
-                return fee_rate
-        except Exception as e:
-            log.warning("Failed to get fee rate", token_id=token_id[:20], error=str(e))
-
-        # Default to 0 if API call fails (API may reject, but better than crashing)
-        self._fee_rates[token_id] = 0
         return 0
 
     def _build_hmac_signature(
@@ -617,31 +593,31 @@ class AsyncClobClient:
         price: float,
         size: float,
         neg_risk: Optional[bool] = None,
-        order_type: str = "FOK",  # Default to Fill-or-Kill for arbitrage
+        order_type: str = "GTC",  # Default to GTC with immediate cancel for arbitrage
     ) -> dict[str, Any]:
         """
         Sign and submit an order in one call.
 
         Args:
             neg_risk: If None, auto-detects from API. If provided, uses that value.
-            order_type: "FOK" (Fill-or-Kill), "GTC" (Good-til-Cancelled), "GTD", "FAK"
+            order_type: "GTC" (Good-til-Cancelled), "FOK" (Fill-or-Kill), "GTD", "FAK"
 
         For maximum parallelization, use sign_order + post_order separately.
         """
         t0 = time.time()
 
-        # Fetch neg_risk and fee_rate in parallel if needed
+        # Fetch neg_risk in parallel if needed (fee_rate is always 0)
         fetch_tasks = []
         if neg_risk is None:
             fetch_tasks.append(self.get_neg_risk(token_id))
-        fetch_tasks.append(self.get_fee_rate_bps(token_id))
 
-        await asyncio.gather(*fetch_tasks)
+        if fetch_tasks:
+            await asyncio.gather(*fetch_tasks)
 
-        # Get resolved values from cache
+        # Get resolved values
         if neg_risk is None:
             neg_risk = self._neg_risk.get(token_id, False)
-        fee_rate = self._fee_rates.get(token_id, 0)
+        fee_rate = 0
         t1 = time.time()
 
         # Run signing in dedicated thread pool to not block event loop
@@ -674,15 +650,15 @@ class AsyncClobClient:
     async def submit_orders_parallel(
         self,
         orders: list[tuple[str, str, float, float, Optional[bool]]],
-        order_type: str = "FOK",
-    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        order_type: str = "GTC",
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """
         Submit multiple orders in parallel with optimized latency.
 
         Args:
             orders: List of (token_id, side, price, size, neg_risk) tuples
                     neg_risk can be None for auto-detection
-            order_type: Order type - "FOK" (Fill-or-Kill) recommended for arbitrage
+            order_type: Order type - "GTC" (Good-til-Cancelled) recommended for arbitrage
 
         Returns:
             Tuple of (list of API responses, timing dict with ms values)
@@ -697,16 +673,13 @@ class AsyncClobClient:
             token_id for token_id, side, price, size, neg_risk in orders if neg_risk is None
         ]
 
-        # Fetch neg_risk and fee_rate in parallel for all tokens
+        # Fetch neg_risk in parallel for all tokens (fee_rate is always 0)
         # These are cached, so subsequent calls will be instant
         fetch_tasks = []
 
         # Add neg_risk fetch tasks
         if tokens_needing_neg_risk:
             fetch_tasks.extend([self.get_neg_risk(token_id) for token_id in tokens_needing_neg_risk])
-
-        # Add fee_rate fetch tasks for all tokens
-        fetch_tasks.extend([self.get_fee_rate_bps(token_id) for token_id in all_token_ids])
 
         # Run all fetches in parallel
         if fetch_tasks:
@@ -717,7 +690,7 @@ class AsyncClobClient:
         for token_id, side, price, size, neg_risk in orders:
             if neg_risk is None:
                 neg_risk = self._neg_risk.get(token_id, False)
-            fee_rate = self._fee_rates.get(token_id, 0)
+            fee_rate = 0
             resolved_orders.append((token_id, side, price, size, neg_risk, fee_rate))
         t1 = time.time()
 
@@ -798,21 +771,19 @@ class AsyncClobClient:
 
         return results, timing
 
-    async def cancel_order(self, order_id: str) -> dict[str, Any]:
+    async def cancel_order(self, order_id: str) -> bool:
         """Cancel an order by ID."""
-        path = "/order"
-        body = {"orderID": order_id}
-        body_str = json.dumps(body, separators=(",", ":"))
-        headers = self._get_l2_headers("DELETE", path, body_str)
-
-        response = await self._client.request(
-            "DELETE",
-            f"{self.host}{path}",
-            headers=headers,
-            content=body_str,
-        )
-
-        return response.json()
+        try:
+            path = f"/order/{order_id}"
+            headers = self._get_l2_headers("DELETE", path)
+            response = await self._client.delete(
+                f"{self.host}{path}",
+                headers=headers,
+            )
+            return response.status_code == 200
+        except Exception as e:
+            log.warning("Failed to cancel order", order_id=order_id[:20], error=str(e))
+            return False
 
     async def get_order(self, order_id: str) -> dict[str, Any]:
         """Get order details by ID."""

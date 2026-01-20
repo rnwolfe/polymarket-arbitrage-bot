@@ -788,8 +788,7 @@ class OrderExecutor:
         # Try async client first
         if self._async_client:
             try:
-                result = await self._async_client.cancel_order(order_id)
-                return order_id in result.get("canceled", [])
+                return await self._async_client.cancel_order(order_id)
             except Exception as e:
                 log.error("Failed to cancel order (async)", order_id=order_id[:20], error=str(e))
                 return False
@@ -1083,7 +1082,7 @@ class OrderExecutor:
 
                 # Use optimized parallel execution: batch neg_risk + sign + submit
                 timing.order_signing_start = ExecutionTiming.now_ms()
-                orders = [
+                orders: list[tuple[str, str, float, float, Optional[bool]]] = [
                     (
                         opportunity.market.yes_token.token_id,
                         "BUY",
@@ -1205,115 +1204,44 @@ class OrderExecutor:
                 status=no_result.status.value,
             )
 
-        # Handle FOK orders that didn't immediately fill
-        # - PENDING (delayed): Check trades API to see if it filled (FOK orders disappear from order API)
-        # - SUBMITTED (live): Cancel immediately - FOK shouldn't be on the book
-        yes_needs_handling = yes_result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED) and yes_result.order_id
-        no_needs_handling = no_result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED) and no_result.order_id
-
-        if yes_needs_handling or no_needs_handling:
-            # For FOK orders with "delayed" status, the order is processed instantly and removed
-            # from the order book. We CANNOT poll the order API (it returns 404).
-            # Instead, we must check the TRADES API to see if the order filled.
-            if yes_result.status == ExecutionStatus.PENDING or no_result.status == ExecutionStatus.PENDING:
-                log.info(
-                    "FOK orders in 'delayed' state - checking trades API for fill confirmation",
-                    yes_status=yes_result.status.value if yes_result.order_id else None,
-                    no_status=no_result.status.value if no_result.order_id else None,
-                )
-                
-                # Wait briefly for the trade to be recorded, then check trades API
-                await asyncio.sleep(0.3)  # 300ms for trade to propagate
-                
-                async_client = self._async_client
-                if async_client:
-                    try:
-                        # Get recent trades and check if our order IDs appear
-                        trades_resp = await async_client.get_trades()
-                        if isinstance(trades_resp, dict):
-                            trades = trades_resp.get("data", trades_resp.get("trades", []))
-                        else:
-                            trades = trades_resp if isinstance(trades_resp, list) else []
-                        
-                        # Build set of filled order IDs from recent trades
-                        filled_order_ids = set()
-                        for trade in trades[:50]:  # Check last 50 trades
-                            if isinstance(trade, dict):
-                                taker_id = trade.get("taker_order_id", "")
-                                if taker_id:
-                                    filled_order_ids.add(taker_id)
-                        
-                        # Check if YES order filled
-                        if yes_needs_handling and yes_result.order_id:
-                            if yes_result.order_id in filled_order_ids:
-                                log.info("YES order CONFIRMED FILLED via trades API", order_id=yes_result.order_id[:20])
-                                yes_result.status = ExecutionStatus.FILLED
-                                yes_result.filled_size = yes_result.size
-                                self._update_order_status(yes_result.order_id, "filled", float(yes_result.size))
-                                yes_needs_handling = False
-                            else:
-                                # Order not in trades = FOK was killed (not filled)
-                                log.info("YES order NOT in trades - FOK was killed", order_id=yes_result.order_id[:20])
-                                yes_result.status = ExecutionStatus.CANCELLED
-                                yes_result.filled_size = Decimal("0")
-                                self._update_order_status(yes_result.order_id, "cancelled", 0)
-                                yes_needs_handling = False
-                        
-                        # Check if NO order filled
-                        if no_needs_handling and no_result.order_id:
-                            if no_result.order_id in filled_order_ids:
-                                log.info("NO order CONFIRMED FILLED via trades API", order_id=no_result.order_id[:20])
-                                no_result.status = ExecutionStatus.FILLED
-                                no_result.filled_size = no_result.size
-                                self._update_order_status(no_result.order_id, "filled", float(no_result.size))
-                                no_needs_handling = False
-                            else:
-                                # Order not in trades = FOK was killed (not filled)
-                                log.info("NO order NOT in trades - FOK was killed", order_id=no_result.order_id[:20])
-                                no_result.status = ExecutionStatus.CANCELLED
-                                no_result.filled_size = Decimal("0")
-                                self._update_order_status(no_result.order_id, "cancelled", 0)
-                                no_needs_handling = False
+        # For GTC orders: check status and cancel any unfilled portions
+        if yes_result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED) or \
+           no_result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED):
+            
+            await asyncio.sleep(0.05)  # 50ms for matching engine
+            
+            # Check and cancel unfilled orders
+            async_client = self._async_client
+            if async_client:
+                for result, name in [(yes_result, "YES"), (no_result, "NO")]:
+                    if result.order_id and result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED):
+                        try:
+                            # Get order status
+                            order_info = await async_client.get_order(result.order_id)
+                            if order_info:
+                                filled = float(order_info.get("size_matched", 0))
+                                total = float(order_info.get("original_size", result.size))
+                                result.filled_size = Decimal(str(filled))
                                 
-                    except Exception as e:
-                        log.error("Failed to check trades API for FOK fill confirmation", error=str(e))
-
-            # Cancel any orders still in SUBMITTED state (shouldn't happen with FOK)
-            if yes_needs_handling or no_needs_handling:
-                log.warning(
-                    "FOK orders still unresolved after trades check - attempting cancel",
-                    yes_status=yes_result.status.value if yes_needs_handling else None,
-                    no_status=no_result.status.value if no_needs_handling else None,
-                )
-
-                async_client = self._async_client
-                if yes_needs_handling and yes_result.order_id:
-                    try:
-                        if async_client:
-                            await async_client.cancel_order(yes_result.order_id)
-                        log.info("Cancelled pending YES order", order_id=yes_result.order_id[:20])
-                        yes_result.status = ExecutionStatus.CANCELLED
-                        yes_result.filled_size = Decimal("0")
-                        self._update_order_status(yes_result.order_id, "cancelled", 0)
-                    except Exception as e:
-                        # Cancel might fail if order already processed - that's OK
-                        log.debug("Failed to cancel YES order (may already be processed)", error=str(e))
-                        yes_result.status = ExecutionStatus.CANCELLED
-                        yes_result.filled_size = Decimal("0")
-
-                if no_needs_handling and no_result.order_id:
-                    try:
-                        if async_client:
-                            await async_client.cancel_order(no_result.order_id)
-                        log.info("Cancelled pending NO order", order_id=no_result.order_id[:20])
-                        no_result.status = ExecutionStatus.CANCELLED
-                        no_result.filled_size = Decimal("0")
-                        self._update_order_status(no_result.order_id, "cancelled", 0)
-                    except Exception as e:
-                        # Cancel might fail if order already processed - that's OK
-                        log.debug("Failed to cancel NO order (may already be processed)", error=str(e))
-                        no_result.status = ExecutionStatus.CANCELLED
-                        no_result.filled_size = Decimal("0")
+                                if filled >= total * 0.99:  # Fully filled
+                                    result.status = ExecutionStatus.FILLED
+                                    log.info(f"{name} order FILLED", filled=filled)
+                                    self._update_order_status(result.order_id, "filled", filled)
+                                elif filled > 0:  # Partial fill
+                                    result.status = ExecutionStatus.PARTIAL
+                                    log.info(f"{name} order PARTIAL", filled=filled, total=total)
+                                    # Cancel remainder
+                                    await async_client.cancel_order(result.order_id)
+                                    self._update_order_status(result.order_id, "partial", filled)
+                                else:  # No fill
+                                    result.status = ExecutionStatus.CANCELLED
+                                    await async_client.cancel_order(result.order_id)
+                                    log.info(f"{name} order cancelled (no fill)")
+                                    self._update_order_status(result.order_id, "cancelled", 0)
+                        except Exception as e:
+                            log.warning(f"Failed to check/cancel {name} order", error=str(e))
+            else:
+                log.error("Cannot check GTC order status - no async client")
 
         # Determine overall status
         if yes_result.status == ExecutionStatus.FILLED and no_result.status == ExecutionStatus.FILLED:
@@ -1493,9 +1421,8 @@ class OrderExecutor:
             # Check for error
             error_msg = response.get("error") or response.get("errorMsg") or response.get("message") or ""
             if error_msg:
-                # FOK orders that can't fill return a specific error - treat as CANCELLED not FAILED
-                if "FOK" in error_msg.upper() or "NOT_FILLED" in error_msg.upper():
-                    log.info("FOK order not filled - cancelled", error=error_msg)
+                if "GTC" in error_msg.upper() or "NOT_FILLED" in error_msg.upper():
+                    log.info("GTC order not filled - cancelled", error=error_msg)
                     return OrderResult(
                         token_id=token_id,
                         side=side,
@@ -1528,7 +1455,7 @@ class OrderExecutor:
                 status = ExecutionStatus.FILLED
                 filled_size = size
             elif status_str == "delayed":
-                # 'delayed' means the matching engine is processing - for FOK this often
+                # 'delayed' means the matching engine is processing - for GTC this often
                 # resolves to 'matched' within milliseconds. Treat as PENDING not SUBMITTED
                 # to avoid immediate cancellation.
                 status = ExecutionStatus.PENDING
@@ -1537,7 +1464,7 @@ class OrderExecutor:
                 status = ExecutionStatus.SUBMITTED
                 filled_size = Decimal("0")
             elif status_str in ("canceled", "cancelled", "not_matched", "expired"):
-                # FOK order that couldn't be filled
+                # GTC order that couldn't be filled
                 status = ExecutionStatus.CANCELLED
                 filled_size = Decimal("0")
             else:
