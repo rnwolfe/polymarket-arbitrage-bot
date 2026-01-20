@@ -1204,46 +1204,64 @@ class OrderExecutor:
                 status=no_result.status.value,
             )
 
-        # For GTC orders: check status and cancel any unfilled portions
+        # For GTC orders: check trades API for actual fill confirmation
+        # The order API may return empty for filled orders (same as FOK behavior)
         if yes_result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED) or \
            no_result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED):
             
-            await asyncio.sleep(0.05)  # 50ms for matching engine
+            await asyncio.sleep(0.1)  # 100ms for matching engine + settlement
             
-            # Check and cancel unfilled orders
             async_client = self._async_client
             if async_client:
-                for result, name in [(yes_result, "YES"), (no_result, "NO")]:
-                    if result.order_id and result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED):
-                        try:
-                            # Get order status
-                            order_info = await async_client.get_order(result.order_id)
-                            if order_info:
-                                filled = float(order_info.get("size_matched", 0))
-                                total = float(order_info.get("original_size", result.size))
-                                result.filled_size = Decimal(str(filled))
-                                
-                                if filled >= total * 0.99:  # Fully filled
-                                    result.status = ExecutionStatus.FILLED
-                                    log.info(f"{name} order FILLED", filled=filled)
-                                    self._update_order_status(result.order_id, "filled", filled)
-                                elif filled > 0:  # Partial fill
-                                    result.status = ExecutionStatus.PARTIAL
-                                    log.info(f"{name} order PARTIAL", filled=filled, total=total)
-                                    # Cancel remainder
-                                    await async_client.cancel_order(result.order_id)
-                                    self._update_order_status(result.order_id, "partial", filled)
-                                else:  # No fill
+                # Check trades API for actual fills (more reliable than order API)
+                try:
+                    trades = await async_client.get_trades()
+                    if trades:
+                        for result, name in [(yes_result, "YES"), (no_result, "NO")]:
+                            if result.order_id and result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED):
+                                # Find trades matching this order
+                                order_trades = [t for t in trades if t.get("order_id") == result.order_id]
+                                if order_trades:
+                                    # Sum filled size from all trades for this order
+                                    filled = sum(float(t.get("size", 0)) for t in order_trades)
+                                    result.filled_size = Decimal(str(filled))
+                                    
+                                    if filled >= float(result.size) * 0.99:  # Fully filled
+                                        result.status = ExecutionStatus.FILLED
+                                        log.info(f"{name} order FILLED (from trades)", filled=filled)
+                                        self._update_order_status(result.order_id, "filled", filled)
+                                    elif filled > 0:  # Partial fill
+                                        result.status = ExecutionStatus.PARTIAL
+                                        log.info(f"{name} order PARTIAL (from trades)", filled=filled, requested=float(result.size))
+                                        # Try to cancel remainder
+                                        try:
+                                            await async_client.cancel_order(result.order_id)
+                                        except:
+                                            pass  # Order may already be gone
+                                        self._update_order_status(result.order_id, "partial", filled)
+                                else:
+                                    # No trades found - order didn't fill
                                     result.status = ExecutionStatus.CANCELLED
-                                    await async_client.cancel_order(result.order_id)
-                                    log.info(f"{name} order cancelled (no fill)")
+                                    log.info(f"{name} order cancelled (no trades found)")
+                                    try:
+                                        await async_client.cancel_order(result.order_id)
+                                    except:
+                                        pass
                                     self._update_order_status(result.order_id, "cancelled", 0)
-                        except Exception as e:
-                            log.warning(f"Failed to check/cancel {name} order", error=str(e))
+                except Exception as e:
+                    log.warning("Failed to check trades API for GTC fills", error=str(e))
             else:
                 log.error("Cannot check GTC order status - no async client")
 
         # Determine overall status
+        # Trigger merge if both sides have any fills (FILLED or PARTIAL)
+        both_have_fills = (
+            yes_result.status in (ExecutionStatus.FILLED, ExecutionStatus.PARTIAL) and
+            no_result.status in (ExecutionStatus.FILLED, ExecutionStatus.PARTIAL) and
+            (yes_result.filled_size or Decimal(0)) > 0 and
+            (no_result.filled_size or Decimal(0)) > 0
+        )
+        
         if yes_result.status == ExecutionStatus.FILLED and no_result.status == ExecutionStatus.FILLED:
             status = ExecutionStatus.FILLED
             self.stats.successful += 1
@@ -1299,6 +1317,44 @@ class OrderExecutor:
                     "DRY RUN: Would merge positions",
                     amount=f"${float(opportunity.max_trade_size):.2f}",
                 )
+        elif both_have_fills:
+            # Both sides have partial fills - still attempt merge for matched portion
+            status = ExecutionStatus.PARTIAL
+            self.stats.partial += 1
+            merge_size = min(yes_result.filled_size or Decimal(0), no_result.filled_size or Decimal(0))
+            total_cost = merge_size * opportunity.combined_cost
+            
+            log.info(
+                "Both sides partially filled - attempting merge for matched portion",
+                yes_filled=float(yes_result.filled_size or 0),
+                no_filled=float(no_result.filled_size or 0),
+                merge_size=float(merge_size),
+            )
+            
+            # AUTO-MERGE the matched portion
+            settings = get_settings()
+            if settings.auto_merge and not self.dry_run and merge_size > 0:
+                try:
+                    from rarb.executor.merge import check_and_merge_position
+                    
+                    merge_success, merged_amount, merge_error = await check_and_merge_position(
+                        condition_id=opportunity.market.condition_id,
+                        yes_filled_size=merge_size,
+                        no_filled_size=merge_size,
+                        neg_risk=getattr(opportunity.market, 'neg_risk', False),
+                        market_title=opportunity.market.question,
+                        combined_cost=opportunity.combined_cost,
+                        profit_margin=opportunity.profit_pct,
+                    )
+                    
+                    if merge_success:
+                        log.info(
+                            "PARTIAL MERGE SUCCESSFUL",
+                            merged_amount=f"${float(merged_amount):.2f}",
+                            market=opportunity.market.question[:40],
+                        )
+                except Exception as e:
+                    log.error("Partial merge error", error=str(e))
         elif yes_result.status == ExecutionStatus.FAILED and no_result.status == ExecutionStatus.FAILED:
             status = ExecutionStatus.FAILED
             self.stats.failed += 1
