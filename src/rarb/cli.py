@@ -819,6 +819,141 @@ def redeem() -> None:
 
 
 @cli.command()
+@click.option("--all", "merge_all", is_flag=True, help="Merge all matching position pairs")
+@click.option("--condition-id", help="Merge specific market by condition ID")
+@click.option("--live", is_flag=True, help="Execute merges (default is dry run)")
+@click.option("--min-size", type=float, default=1.0, help="Minimum size to merge")
+def merge(merge_all: bool, condition_id: Optional[str], live: bool, min_size: float) -> None:
+    """Merge matching YES/NO positions to release capital."""
+    setup_logging("INFO")
+
+    async def _merge():
+        import httpx
+        from decimal import Decimal
+        from collections import defaultdict
+        from rarb.executor.merge import merge_positions_sync
+
+        settings = get_settings()
+        if not settings.wallet_address:
+            console.print("[red]Error:[/red] No wallet address configured")
+            return
+
+        if not settings.private_key and live:
+            console.print("[red]Error:[/red] No private key configured for live merge")
+            return
+
+        console.print("\n[bold]Scanning for mergeable positions...[/bold]\n")
+
+        # Get positions from data API
+        async with httpx.AsyncClient() as http_client:
+            resp = await http_client.get(
+                f"https://data-api.polymarket.com/positions?user={settings.wallet_address}"
+            )
+            positions = resp.json()
+
+        if not positions:
+            console.print("[yellow]No positions found[/yellow]")
+            return
+
+        # Group by condition_id
+        # Key: condition_id, Value: { 'title': str, 'YES': size, 'NO': size, 'neg_risk': bool }
+        markets = defaultdict(lambda: {"title": "Unknown", "YES": 0.0, "NO": 0.0, "neg_risk": False})
+
+        for p in positions:
+            cid = p.get("conditionId")
+            if not cid:
+                continue
+
+            # Only consider open positions
+            if p.get("redeemable") or float(p.get("size", 0) or 0) <= 0:
+                continue
+
+            outcome = p.get("outcome", "").upper()
+            size = float(p.get("size", 0) or 0)
+            markets[cid]["title"] = p.get("title", "Unknown")
+            markets[cid]["neg_risk"] = p.get("negativeRisk", False)
+
+            if outcome == "YES":
+                markets[cid]["YES"] += size
+            elif outcome == "NO":
+                markets[cid]["NO"] += size
+
+        # Filter for mergeable pairs
+        mergeable = []
+        for cid, data in markets.items():
+            if condition_id and cid != condition_id:
+                continue
+
+            amount = min(data["YES"], data["NO"])
+            if amount >= min_size:
+                mergeable.append({
+                    "condition_id": cid,
+                    "title": data["title"],
+                    "yes_size": data["YES"],
+                    "no_size": data["NO"],
+                    "amount": amount,
+                    "neg_risk": data["neg_risk"]
+                })
+
+        if not mergeable:
+            console.print("[yellow]No mergeable positions found[/yellow]")
+            return
+
+        # Display table
+        table = Table()
+        table.add_column("Market", style="cyan")
+        table.add_column("YES Size", justify="right")
+        table.add_column("NO Size", justify="right")
+        table.add_column("Mergeable", justify="right", style="green")
+
+        total_mergeable = 0.0
+        for m in mergeable:
+            table.add_row(
+                m["title"][:50],
+                f"{m['yes_size']:.4f}",
+                f"{m['no_size']:.4f}",
+                f"{m['amount']:.4f}"
+            )
+            total_mergeable += m["amount"]
+
+        console.print(table)
+        console.print(f"\nTotal mergeable: [bold]${total_mergeable:.2f}[/bold] ({len(mergeable)} pairs)")
+
+        if not live:
+            console.print("\n[yellow]Dry run mode - use --live to execute merges[/yellow]")
+            return
+
+        if not merge_all and not condition_id:
+            console.print("\n[red]Error:[/red] Specify --all or --condition-id to merge")
+            return
+
+        # Execute merges
+        console.print("\n[bold]Executing merges...[/bold]\n")
+
+        pk = settings.private_key.get_secret_value()
+        released_total = 0.0
+
+        for m in mergeable:
+            console.print(f"Merging {m['title'][:40]}... ", end="")
+            receipt, error = merge_positions_sync(
+                private_key=pk,
+                condition_id=m["condition_id"],
+                amount=Decimal(str(m["amount"])),
+                neg_risk=m["neg_risk"]
+            )
+
+            if receipt:
+                console.print(f"[green]✓ Released ${m['amount']:.2f}[/green]")
+                released_total += m["amount"]
+            else:
+                console.print(f"[red]✗ Failed: {error}[/red]")
+
+        console.print(f"\n[bold]Done! Released ${released_total:.2f} total.[/bold]")
+
+    asyncio.run(_merge())
+
+
+@cli.command()
 def positions() -> None:
     """Show current positions from Polymarket."""
     setup_logging("WARNING")
