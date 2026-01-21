@@ -897,7 +897,11 @@ class AsyncClobClient:
             headers=headers,
         )
 
-        return response.json()
+        result = response.json()
+        # API returns {"data": [...], "next_cursor": ..., "limit": ..., "count": ...}
+        if isinstance(result, dict) and "data" in result:
+            return result["data"]
+        return result if isinstance(result, list) else []
 
     async def get_positions(self) -> list[dict]:
         """Get current positions from the Data API."""
