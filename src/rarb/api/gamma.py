@@ -155,16 +155,8 @@ class GammaClient:
             # Parse tokens from various response formats
             if tokens:
                 for token in tokens:
-                    outcome = (
-                        token.get("outcome", "")
-                        or token.get("name", "")
-                        or ""
-                    ).lower()
-                    token_id = (
-                        token.get("token_id")
-                        or token.get("tokenId")
-                        or token.get("id", "")
-                    )
+                    outcome = (token.get("outcome", "") or token.get("name", "") or "").lower()
+                    token_id = token.get("token_id") or token.get("tokenId") or token.get("id", "")
 
                     if "yes" in outcome:
                         yes_token = Token(
@@ -304,6 +296,23 @@ class GammaClient:
                 if market.volume < Decimal(str(min_volume)):
                     continue
                 if market.liquidity < Decimal(str(min_liquidity)):
+                    continue
+
+                # Exclude 15-minute crypto up/down markets
+                # These have dynamic fees (up to 10%) that aren't exposed via API,
+                # causing order rejections. The ROI doesn't justify the complexity.
+                # Pattern: "Bitcoin Up or Down - January 21, 11:45AM-12:00PM ET"
+                question_lower = market.question.lower()
+                if (
+                    "up or down" in question_lower
+                    and any(
+                        crypto in question_lower for crypto in ["bitcoin", "ethereum", "solana"]
+                    )
+                    and any(
+                        time_marker in market.question
+                        for time_marker in ["AM ET", "PM ET", "AM-", "PM-"]
+                    )
+                ):
                     continue
 
                 # Filter by resolution date

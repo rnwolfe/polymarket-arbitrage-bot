@@ -57,6 +57,7 @@ ORDER_TYPES = {
 @dataclass
 class SignedOrder:
     """A signed order ready for submission."""
+
     salt: int
     maker: str
     signer: str
@@ -122,27 +123,28 @@ class AsyncClobClient:
     def warmup_signing_threads(cls) -> None:
         """
         Warm up signing threads by running dummy computations.
-        
+
         This prevents cold-start latency spikes when the first real order comes in.
         The threads stay warm due to Python's thread caching behavior.
         """
         if cls._signing_warmed_up:
             return
-        
+
         import hashlib
+
         executor = cls.get_signing_executor()
-        
+
         def dummy_compute():
             """Simulate signing workload to warm up thread."""
             for _ in range(100):
                 hashlib.sha256(b"warmup" * 100).hexdigest()
             return True
-        
+
         # Submit to all 4 threads in parallel
         futures = [executor.submit(dummy_compute) for _ in range(4)]
         for f in futures:
             f.result()  # Wait for completion
-        
+
         cls._signing_warmed_up = True
         log.info("Signing thread pool warmed up")
 
@@ -183,7 +185,7 @@ class AsyncClobClient:
             http2=False,  # HTTP/1.1 works better through SOCKS5 proxy
             limits=limits,
         )
-        
+
         # Secondary client (used for NO orders to avoid head-of-line blocking)
         self._client2 = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=10.0),
@@ -191,7 +193,7 @@ class AsyncClobClient:
             http2=False,
             limits=limits,
         )
-        
+
         self._warmed_up = False
 
         # Cache for tick sizes, neg_risk status, and fee rates
@@ -222,21 +224,25 @@ class AsyncClobClient:
             # Make parallel GET requests on BOTH clients to establish connections
             # This ensures both YES and NO order paths are ready
             warmup_tasks = [
-                self._client.get(f"{self.host}/tick-sizes")
-                for _ in range(num_connections)
-            ] + [
-                self._client2.get(f"{self.host}/tick-sizes")
-                for _ in range(num_connections)
-            ]
+                self._client.get(f"{self.host}/tick-sizes") for _ in range(num_connections)
+            ] + [self._client2.get(f"{self.host}/tick-sizes") for _ in range(num_connections)]
             await asyncio.gather(*warmup_tasks)
             elapsed = int((time.time() - t0) * 1000)
             self._last_request_time = time.time()
             if not self._warmed_up:
-                log.info("Connection warmup complete (both clients)", elapsed_ms=elapsed, connections=num_connections * 2)
+                log.info(
+                    "Connection warmup complete (both clients)",
+                    elapsed_ms=elapsed,
+                    connections=num_connections * 2,
+                )
             else:
-                log.info("Connection keep-alive refresh", elapsed_ms=elapsed, connections=num_connections * 2)
+                log.info(
+                    "Connection keep-alive refresh",
+                    elapsed_ms=elapsed,
+                    connections=num_connections * 2,
+                )
             self._warmed_up = True
-            
+
             # Also warm up signing threads
             self.warmup_signing_threads()
         except Exception as e:
@@ -321,7 +327,9 @@ class AsyncClobClient:
         self._neg_risk[token_id] = False
         return False
 
-    async def prefetch_neg_risk(self, token_ids: list[str], batch_size: int = 50) -> dict[str, bool]:
+    async def prefetch_neg_risk(
+        self, token_ids: list[str], batch_size: int = 50
+    ) -> dict[str, bool]:
         """
         Pre-fetch neg_risk status for multiple tokens in parallel.
 
@@ -353,7 +361,7 @@ class AsyncClobClient:
 
         # Fetch in batches to avoid overwhelming the API
         for i in range(0, len(tokens_to_fetch), batch_size):
-            batch = tokens_to_fetch[i:i + batch_size]
+            batch = tokens_to_fetch[i : i + batch_size]
             tasks = [self.get_neg_risk(token_id) for token_id in batch]
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -375,9 +383,12 @@ class AsyncClobClient:
     async def get_fee_rate_bps(self, token_id: str) -> int:
         """
         Get the fee rate in basis points for a token.
-        
-        Most Polymarket markets have 0% fees, but 15-min crypto up/down
-        markets have 1000 bps (10%) fees. We cache aggressively.
+
+        Most Polymarket markets have 0% fees, but some markets (like 15-min
+        crypto up/down) may have fees. We cache aggressively.
+
+        Note: Uses snake_case 'token_id' parameter and reads 'base_fee' from
+        response to match the official py-clob-client implementation.
         """
         # Return cached value if available (fast path)
         if token_id in self._fee_rates:
@@ -386,15 +397,16 @@ class AsyncClobClient:
         try:
             resp = await self._client.get(
                 f"{self.host}/fee-rate",
-                params={"tokenID": token_id},
+                params={"token_id": token_id},  # snake_case per official client
             )
             self._last_request_time = time.time()
 
             if resp.status_code == 200:
                 data = resp.json()
-                # API returns maker_fee and taker_fee, use taker for our BUY orders
-                fee_rate = data.get("taker_fee", data.get("maker_fee", 0))
+                # API returns base_fee (per official py-clob-client)
+                fee_rate = int(data.get("base_fee", 0) or 0)
                 self._fee_rates[token_id] = fee_rate
+                log.debug("Fee rate fetched", token_id=token_id[:20], fee_rate=fee_rate)
                 return fee_rate
         except Exception as e:
             log.warning("Failed to get fee rate", token_id=token_id[:20], error=str(e))
@@ -403,7 +415,9 @@ class AsyncClobClient:
         self._fee_rates[token_id] = 0
         return 0
 
-    async def prefetch_fee_rates(self, token_ids: list[str], batch_size: int = 50) -> dict[str, int]:
+    async def prefetch_fee_rates(
+        self, token_ids: list[str], batch_size: int = 50
+    ) -> dict[str, int]:
         """
         Pre-fetch fee rates for multiple tokens in parallel.
         Call at startup alongside prefetch_neg_risk to warm the cache.
@@ -422,7 +436,7 @@ class AsyncClobClient:
 
         t0 = time.time()
         for i in range(0, len(tokens_to_fetch), batch_size):
-            batch = tokens_to_fetch[i:i + batch_size]
+            batch = tokens_to_fetch[i : i + batch_size]
             tasks = [self.get_fee_rate_bps(token_id) for token_id in batch]
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -502,6 +516,7 @@ class AsyncClobClient:
 
         # Generate unique salt (matching py_clob_client's approach)
         import random
+
         salt = round(time.time() * random.random())
 
         # Select exchange based on neg_risk
@@ -610,7 +625,7 @@ class AsyncClobClient:
     ) -> dict[str, Any]:
         """
         Submit a signed order using a specific HTTP client.
-        
+
         This allows using separate clients for YES vs NO orders to avoid
         head-of-line blocking.
         """
@@ -733,7 +748,9 @@ class AsyncClobClient:
 
         # Add neg_risk fetch tasks
         if tokens_needing_neg_risk:
-            fetch_tasks.extend([self.get_neg_risk(token_id) for token_id in tokens_needing_neg_risk])
+            fetch_tasks.extend(
+                [self.get_neg_risk(token_id) for token_id in tokens_needing_neg_risk]
+            )
 
         # Add fee_rate fetch tasks for tokens not yet cached
         tokens_needing_fee = [t for t in all_token_ids if t not in self._fee_rates]
@@ -774,13 +791,17 @@ class AsyncClobClient:
 
         # Submit orders using SEPARATE HTTP clients to avoid head-of-line blocking
         # Also stagger by 15ms to let first order clear Polymarket's queue
-        async def timed_post(signed_order: SignedOrder, idx: int, client: httpx.AsyncClient, stagger_ms: int = 0) -> tuple[Any, int]:
+        async def timed_post(
+            signed_order: SignedOrder, idx: int, client: httpx.AsyncClient, stagger_ms: int = 0
+        ) -> tuple[Any, int]:
             """Submit order using specified client and return result with timing."""
             if stagger_ms > 0:
                 await asyncio.sleep(stagger_ms / 1000.0)
             start = time.time()
             try:
-                result = await self._post_order_with_client(signed_order, client, order_type=order_type)
+                result = await self._post_order_with_client(
+                    signed_order, client, order_type=order_type
+                )
             except Exception as e:
                 result = e
             elapsed_ms = int((time.time() - start) * 1000)
@@ -856,10 +877,20 @@ class AsyncClobClient:
 
         try:
             data = response.json()
-            log.debug("get_order response", order_id=order_id[:20], status=data.get("status"), response=str(data)[:100])
+            log.debug(
+                "get_order response",
+                order_id=order_id[:20],
+                status=data.get("status"),
+                response=str(data)[:100],
+            )
             return data
         except Exception as e:
-            log.warning("get_order JSON parse error", order_id=order_id[:20], status_code=response.status_code, text=response.text[:100])
+            log.warning(
+                "get_order JSON parse error",
+                order_id=order_id[:20],
+                status_code=response.status_code,
+                text=response.text[:100],
+            )
             # Return a dict indicating unknown status
             return {"orderID": order_id, "status": "unknown", "error": str(e)}
 
@@ -913,7 +944,9 @@ class AsyncClobClient:
             response = await self._client.get(f"{data_api_url}{path}")
 
             if response.status_code != 200:
-                log.error("Failed to get positions", status=response.status_code, body=response.text[:200])
+                log.error(
+                    "Failed to get positions", status=response.status_code, body=response.text[:200]
+                )
                 return []
 
             return response.json()
