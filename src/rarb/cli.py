@@ -869,13 +869,17 @@ def merge(merge_all: bool, condition_id: Optional[str], live: bool, min_size: fl
                 continue
 
             outcome = p.get("outcome", "").upper()
+            outcome_index = p.get("outcomeIndex", -1)
             size = float(p.get("size", 0) or 0)
             markets[cid]["title"] = p.get("title", "Unknown")
             markets[cid]["neg_risk"] = p.get("negativeRisk", False)
 
-            if outcome == "YES":
+            # For binary markets, outcomeIndex 0 = first outcome (like YES or team A)
+            # outcomeIndex 1 = second outcome (like NO or team B)
+            # Use outcomeIndex as primary, fall back to outcome name
+            if outcome == "YES" or outcome_index == 0:
                 markets[cid]["YES"] += size
-            elif outcome == "NO":
+            elif outcome == "NO" or outcome_index == 1:
                 markets[cid]["NO"] += size
 
         # Filter for mergeable pairs
