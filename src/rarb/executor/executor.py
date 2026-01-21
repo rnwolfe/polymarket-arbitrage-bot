@@ -964,8 +964,9 @@ class OrderExecutor:
         opp = result.opportunity
         timestamp = result.timestamp.isoformat()
 
-        # Only log trades that were actually FILLED (not just submitted)
-        if result.yes_order.status == ExecutionStatus.FILLED:
+        # Log trades that were FILLED or PARTIAL (any actual fill)
+        if result.yes_order.status in (ExecutionStatus.FILLED, ExecutionStatus.PARTIAL) and \
+           (result.yes_order.filled_size or Decimal(0)) > 0:
             self._trade_log.log_trade(Trade(
                 timestamp=timestamp,
                 platform="polymarket",
@@ -981,8 +982,9 @@ class OrderExecutor:
                 profit_expected=float(opp.expected_profit_usd) / 2,  # Split between both orders
             ))
 
-        # Only log trades that were actually FILLED
-        if result.no_order.status == ExecutionStatus.FILLED:
+        # Log trades that were FILLED or PARTIAL (any actual fill)
+        if result.no_order.status in (ExecutionStatus.FILLED, ExecutionStatus.PARTIAL) and \
+           (result.no_order.filled_size or Decimal(0)) > 0:
             self._trade_log.log_trade(Trade(
                 timestamp=timestamp,
                 platform="polymarket",
@@ -1206,50 +1208,71 @@ class OrderExecutor:
 
         # For GTC orders: check trades API for actual fill confirmation
         # The order API may return empty for filled orders (same as FOK behavior)
+        # Use retry loop since trades API may have indexing delay
         if yes_result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED) or \
            no_result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED):
             
-            await asyncio.sleep(0.1)  # 100ms for matching engine + settlement
-            
             async_client = self._async_client
             if async_client:
-                # Check trades API for actual fills (more reliable than order API)
-                try:
-                    trades = await async_client.get_trades()
-                    if trades:
-                        for result, name in [(yes_result, "YES"), (no_result, "NO")]:
-                            if result.order_id and result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED):
-                                # Find trades matching this order
-                                order_trades = [t for t in trades if t.get("order_id") == result.order_id]
-                                if order_trades:
-                                    # Sum filled size from all trades for this order
-                                    filled = sum(float(t.get("size", 0)) for t in order_trades)
-                                    result.filled_size = Decimal(str(filled))
-                                    
-                                    if filled >= float(result.size) * 0.99:  # Fully filled
-                                        result.status = ExecutionStatus.FILLED
-                                        log.info(f"{name} order FILLED (from trades)", filled=filled)
-                                        self._update_order_status(result.order_id, "filled", filled)
-                                    elif filled > 0:  # Partial fill
-                                        result.status = ExecutionStatus.PARTIAL
-                                        log.info(f"{name} order PARTIAL (from trades)", filled=filled, requested=float(result.size))
-                                        # Try to cancel remainder
-                                        try:
-                                            await async_client.cancel_order(result.order_id)
-                                        except:
-                                            pass  # Order may already be gone
-                                        self._update_order_status(result.order_id, "partial", filled)
-                                else:
-                                    # No trades found - order didn't fill
-                                    result.status = ExecutionStatus.CANCELLED
-                                    log.info(f"{name} order cancelled (no trades found)")
-                                    try:
-                                        await async_client.cancel_order(result.order_id)
-                                    except:
-                                        pass
-                                    self._update_order_status(result.order_id, "cancelled", 0)
-                except Exception as e:
-                    log.warning("Failed to check trades API for GTC fills", error=str(e))
+                # Retry up to 3 times with increasing delays (100ms, 300ms, 600ms)
+                max_retries = 3
+                for attempt in range(max_retries):
+                    wait_time = 0.1 * (attempt + 1) * 2  # 0.2s, 0.4s, 0.6s
+                    await asyncio.sleep(wait_time)
+                    
+                    try:
+                        trades = await async_client.get_trades()
+                        all_resolved = True
+                        
+                        if trades:
+                            for result, name in [(yes_result, "YES"), (no_result, "NO")]:
+                                if result.order_id and result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED):
+                                    # Find trades matching this order
+                                    order_trades = [t for t in trades if t.get("order_id") == result.order_id]
+                                    if order_trades:
+                                        # Sum filled size from all trades for this order
+                                        filled = sum(float(t.get("size", 0)) for t in order_trades)
+                                        result.filled_size = Decimal(str(filled))
+                                        
+                                        if filled >= float(result.size) * 0.99:  # Fully filled
+                                            result.status = ExecutionStatus.FILLED
+                                            log.info(f"{name} order FILLED (from trades)", filled=filled, attempt=attempt+1)
+                                            self._update_order_status(result.order_id, "filled", filled)
+                                        elif filled > 0:  # Partial fill
+                                            result.status = ExecutionStatus.PARTIAL
+                                            log.info(f"{name} order PARTIAL (from trades)", filled=filled, requested=float(result.size), attempt=attempt+1)
+                                            # Try to cancel remainder
+                                            try:
+                                                await async_client.cancel_order(result.order_id)
+                                            except:
+                                                pass  # Order may already be gone
+                                            self._update_order_status(result.order_id, "partial", filled)
+                                    else:
+                                        # No trades found yet - may still be indexing
+                                        all_resolved = False
+                        else:
+                            all_resolved = False
+                        
+                        # If all orders resolved or this is the last attempt, break
+                        if all_resolved or attempt == max_retries - 1:
+                            break
+                            
+                    except Exception as e:
+                        log.warning("Failed to check trades API for GTC fills", error=str(e), attempt=attempt+1)
+                        if attempt == max_retries - 1:
+                            break
+                
+                # After retries, cancel any still-pending orders (they likely didn't fill)
+                for result, name in [(yes_result, "YES"), (no_result, "NO")]:
+                    if result.order_id and result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED):
+                        log.info(f"{name} order not filled after {max_retries} checks - cancelling")
+                        result.status = ExecutionStatus.CANCELLED
+                        result.filled_size = Decimal(0)
+                        try:
+                            await async_client.cancel_order(result.order_id)
+                        except:
+                            pass
+                        self._update_order_status(result.order_id, "cancelled", 0)
             else:
                 log.error("Cannot check GTC order status - no async client")
 
