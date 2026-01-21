@@ -87,6 +87,8 @@ class Market:
     closed: bool = False
 
     end_date: Optional[datetime] = None
+    fee_rate_bps: int = 0
+    neg_risk: bool = False
 
     # Order books (populated separately)
     yes_orderbook: Optional[OrderBook] = None
@@ -119,13 +121,13 @@ class ArbitrageOpportunity:
 
     market: Market
     yes_ask: Decimal  # Price to buy YES
-    no_ask: Decimal   # Price to buy NO
+    no_ask: Decimal  # Price to buy NO
     combined_cost: Decimal  # Total cost to buy both
     profit_pct: Decimal  # Expected profit percentage
 
     yes_size_available: Decimal  # Liquidity at YES ask
-    no_size_available: Decimal   # Liquidity at NO ask
-    max_trade_size: Decimal      # Max tradeable size (min of both)
+    no_size_available: Decimal  # Liquidity at NO ask
+    max_trade_size: Decimal  # Max tradeable size (min of both)
 
     timestamp: datetime = field(default_factory=datetime.utcnow)
 

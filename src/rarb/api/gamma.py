@@ -111,6 +111,36 @@ class GammaClient:
             return data
         return []
 
+    async def get_market_by_condition_id(self, condition_id: str) -> Optional[Market]:
+        """Fetch a single market by its condition ID."""
+        try:
+            params = {"condition_id": condition_id}
+            data = await self._get("/markets", params)
+            if isinstance(data, list) and len(data) > 0:
+                return self.parse_market(data[0])
+        except Exception as e:
+            log.debug(
+                "Failed to fetch market by condition_id",
+                condition_id=condition_id[:20],
+                error=str(e),
+            )
+        return None
+
+    async def get_market_by_slug(self, slug: str) -> Optional[Market]:
+        """Fetch a single market by its slug."""
+        try:
+            params = {"slug": slug}
+            data = await self._get("/markets", params)
+            if isinstance(data, list) and len(data) > 0:
+                # Find exact match by slug if multiple returned
+                for m_data in data:
+                    if m_data.get("slug") == slug:
+                        return self.parse_market(m_data)
+                return self.parse_market(data[0])
+        except Exception as e:
+            log.debug("Failed to fetch market by slug", slug=slug[:20], error=str(e))
+        return None
+
     def parse_market(self, data: dict[str, Any]) -> Optional[Market]:
         """
         Parse a market dictionary into a Market object.
@@ -230,6 +260,25 @@ class GammaClient:
                 except (ValueError, TypeError) as e:
                     log.debug("Failed to parse end_date", raw=end_date_raw, error=str(e))
 
+            # Detect 15-minute crypto up/down markets which have high fees (1000 bps)
+            # Pattern: "Bitcoin Up or Down - January 21, 11:45AM-12:00PM ET"
+            fee_rate_bps = 0
+            question_lower = data.get("question", "").lower()
+            if (
+                "up or down" in question_lower
+                and any(crypto in question_lower for crypto in ["bitcoin", "ethereum", "solana"])
+                and any(
+                    time_marker in data.get("question", "")
+                    for time_marker in ["AM ET", "PM ET", "AM-", "PM-"]
+                )
+            ):
+                fee_rate_bps = 1000
+                log.info(
+                    "Detected high-fee 15-min market",
+                    question=data.get("question", "")[:50],
+                    fee_rate_bps=fee_rate_bps,
+                )
+
             return Market(
                 id=str(data.get("id", "")),
                 condition_id=str(data.get("conditionId", data.get("condition_id", ""))),
@@ -242,6 +291,8 @@ class GammaClient:
                 active=data.get("active", True),
                 closed=data.get("closed", False),
                 end_date=end_date,
+                fee_rate_bps=fee_rate_bps,
+                neg_risk=data.get("negRisk", False),
             )
 
         except (KeyError, ValueError, TypeError) as e:
@@ -296,23 +347,6 @@ class GammaClient:
                 if market.volume < Decimal(str(min_volume)):
                     continue
                 if market.liquidity < Decimal(str(min_liquidity)):
-                    continue
-
-                # Exclude 15-minute crypto up/down markets
-                # These have dynamic fees (up to 10%) that aren't exposed via API,
-                # causing order rejections. The ROI doesn't justify the complexity.
-                # Pattern: "Bitcoin Up or Down - January 21, 11:45AM-12:00PM ET"
-                question_lower = market.question.lower()
-                if (
-                    "up or down" in question_lower
-                    and any(
-                        crypto in question_lower for crypto in ["bitcoin", "ethereum", "solana"]
-                    )
-                    and any(
-                        time_marker in market.question
-                        for time_marker in ["AM ET", "PM ET", "AM-", "PM-"]
-                    )
-                ):
                     continue
 
                 # Filter by resolution date

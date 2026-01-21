@@ -660,6 +660,7 @@ class AsyncClobClient:
         price: float,
         size: float,
         neg_risk: Optional[bool] = None,
+        fee_rate_bps: Optional[int] = None,
         order_type: str = "GTC",  # Default to GTC with immediate cancel for arbitrage
     ) -> dict[str, Any]:
         """
@@ -667,6 +668,7 @@ class AsyncClobClient:
 
         Args:
             neg_risk: If None, auto-detects from API. If provided, uses that value.
+            fee_rate_bps: If None, auto-detects from API. If provided, uses that value.
             order_type: "GTC" (Good-til-Cancelled), "FOK" (Fill-or-Kill), "GTD", "FAK"
 
         For maximum parallelization, use sign_order + post_order separately.
@@ -677,7 +679,11 @@ class AsyncClobClient:
         fetch_tasks = []
         if neg_risk is None:
             fetch_tasks.append(self.get_neg_risk(token_id))
-        if token_id not in self._fee_rates:
+
+        # Use provided fee_rate_bps if available, otherwise fetch
+        if fee_rate_bps is not None:
+            self._fee_rates[token_id] = fee_rate_bps
+        elif token_id not in self._fee_rates:
             fetch_tasks.append(self.get_fee_rate_bps(token_id))
 
         if fetch_tasks:
@@ -718,15 +724,15 @@ class AsyncClobClient:
 
     async def submit_orders_parallel(
         self,
-        orders: list[tuple[str, str, float, float, Optional[bool]]],
+        orders: list[tuple[str, str, float, float, Optional[bool], Optional[int]]],
         order_type: str = "GTC",
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """
         Submit multiple orders in parallel with optimized latency.
 
         Args:
-            orders: List of (token_id, side, price, size, neg_risk) tuples
-                    neg_risk can be None for auto-detection
+            orders: List of (token_id, side, price, size, neg_risk, fee_rate_bps) tuples
+                    neg_risk and fee_rate_bps can be None for auto-detection
             order_type: Order type - "GTC" (Good-til-Cancelled) recommended for arbitrage
 
         Returns:
@@ -735,27 +741,24 @@ class AsyncClobClient:
         t0 = time.time()
 
         # Get unique token IDs
-        all_token_ids = list(set(token_id for token_id, side, price, size, neg_risk in orders))
-
-        # Auto-detect neg_risk for orders where it's None, in parallel
-        tokens_needing_neg_risk = [
-            token_id for token_id, side, price, size, neg_risk in orders if neg_risk is None
-        ]
+        all_token_ids = list(
+            set(token_id for token_id, side, price, size, neg_risk, fee_rate in orders)
+        )
 
         # Fetch neg_risk and fee_rate in parallel for all tokens
         # These are cached, so subsequent calls will be instant
         fetch_tasks = []
 
-        # Add neg_risk fetch tasks
-        if tokens_needing_neg_risk:
-            fetch_tasks.extend(
-                [self.get_neg_risk(token_id) for token_id in tokens_needing_neg_risk]
-            )
+        for token_id, side, price, size, neg_risk, fee_rate in orders:
+            # Add neg_risk fetch task if None
+            if neg_risk is None and token_id not in self._neg_risk:
+                fetch_tasks.append(self.get_neg_risk(token_id))
 
-        # Add fee_rate fetch tasks for tokens not yet cached
-        tokens_needing_fee = [t for t in all_token_ids if t not in self._fee_rates]
-        if tokens_needing_fee:
-            fetch_tasks.extend([self.get_fee_rate_bps(token_id) for token_id in tokens_needing_fee])
+            # Add fee_rate fetch task if None
+            if fee_rate is not None:
+                self._fee_rates[token_id] = fee_rate
+            elif token_id not in self._fee_rates:
+                fetch_tasks.append(self.get_fee_rate_bps(token_id))
 
         # Run all fetches in parallel
         if fetch_tasks:
@@ -763,11 +766,14 @@ class AsyncClobClient:
 
         # Build resolved orders with neg_risk and fee_rate values
         resolved_orders = []
-        for token_id, side, price, size, neg_risk in orders:
+        for token_id, side, price, size, neg_risk, fee_rate in orders:
             if neg_risk is None:
                 neg_risk = self._neg_risk.get(token_id, False)
-            fee_rate = self._fee_rates.get(token_id, 0)
-            resolved_orders.append((token_id, side, price, size, neg_risk, fee_rate))
+
+            # If fee_rate was passed in, it's already in the cache from the loop above
+            # If it wasn't, we just fetched it and it's in the cache
+            resolved_fee_rate = self._fee_rates.get(token_id, 0)
+            resolved_orders.append((token_id, side, price, size, neg_risk, resolved_fee_rate))
         t1 = time.time()
 
         # Sign all orders in parallel using dedicated signing thread pool

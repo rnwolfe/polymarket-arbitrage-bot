@@ -95,16 +95,25 @@ class ArbitrageAnalyzer:
             self.stats.rejected_no_asks += 1
             return None
 
-        # Calculate combined cost
-        combined_cost = yes_ask + no_ask
+        # Calculate combined cost and fees
+        fee_rate_bps = getattr(snapshot.market, "fee_rate_bps", 0)
+        fee_rate = Decimal(str(fee_rate_bps)) / Decimal("10000")
 
-        # Check if arbitrage exists (combined cost < max threshold)
-        if combined_cost >= self.config.max_combined_cost:
+        combined_cost = yes_ask + no_ask
+        total_fees = combined_cost * fee_rate
+        combined_cost_with_fees = combined_cost + total_fees
+
+        # Check if arbitrage exists (combined cost with fees < 1.0)
+        # We also respect the max_combined_cost setting as an additional safety
+        if (
+            combined_cost_with_fees >= Decimal("1")
+            or combined_cost >= self.config.max_combined_cost
+        ):
             self.stats.rejected_cost_too_high += 1
             return None
 
-        # Calculate profit percentage
-        profit_pct = (Decimal("1") - combined_cost) / combined_cost
+        # Calculate profit percentage after fees
+        profit_pct = (Decimal("1") - combined_cost_with_fees) / combined_cost_with_fees
 
         # Check minimum profit threshold
         if profit_pct < self.config.min_profit_threshold:
@@ -156,9 +165,7 @@ class ArbitrageAnalyzer:
 
         return opportunity
 
-    def analyze_batch(
-        self, snapshots: list[MarketSnapshot]
-    ) -> list[ArbitrageOpportunity]:
+    def analyze_batch(self, snapshots: list[MarketSnapshot]) -> list[ArbitrageOpportunity]:
         """
         Analyze multiple snapshots for opportunities.
 

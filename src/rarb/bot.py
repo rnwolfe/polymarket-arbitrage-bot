@@ -242,6 +242,9 @@ class RealtimeArbitrageBot:
     # How often to refresh the cached balance (in seconds)
     BALANCE_REFRESH_INTERVAL = 60  # 1 minute
 
+    # How often to check for mergeable positions (in seconds)
+    MERGE_CHECK_INTERVAL = 300  # 5 minutes
+
     def __init__(self) -> None:
         from rarb.scanner.realtime_scanner import RealtimeScanner
 
@@ -260,6 +263,7 @@ class RealtimeArbitrageBot:
         self._running = False
         self._execution_lock = asyncio.Lock()
         self._redemption_task: Optional[asyncio.Task] = None
+        self._merge_check_task: Optional[asyncio.Task] = None
         self._stats_history_task: Optional[asyncio.Task] = None
         self._minute_stats_task: Optional[asyncio.Task] = None
         self._balance_refresh_task: Optional[asyncio.Task] = None
@@ -269,7 +273,7 @@ class RealtimeArbitrageBot:
         # Cached USDC balance (updated periodically and after trades)
         self._cached_balance: Decimal = Decimal("0")
         self._balance_lock = asyncio.Lock()
-        
+
         # Session ID for linking balance history records
         self._session_id: Optional[str] = None
 
@@ -322,7 +326,9 @@ class RealtimeArbitrageBot:
         except Exception as e:
             log.debug("Failed to save near-miss alert", error=str(e))
 
-    async def _save_insufficient_balance_alert(self, alert, required: Decimal, available: Decimal) -> None:
+    async def _save_insufficient_balance_alert(
+        self, alert, required: Decimal, available: Decimal
+    ) -> None:
         """Save an alert for when balance is insufficient."""
         from datetime import datetime, timezone
         from rarb.data.repositories import NearMissAlertRepository
@@ -361,6 +367,7 @@ class RealtimeArbitrageBot:
         # - Stale data (> 500ms): Conservative, use 55%
         # This replaces the old static 50% margin that killed many opportunities
         import time
+
         data_age_ms = (time.time() - alert.timestamp) * 1000
         if data_age_ms < 100:
             safety_margin = Decimal("0.80")  # Fresh data - be aggressive
@@ -368,11 +375,13 @@ class RealtimeArbitrageBot:
             safety_margin = Decimal("0.70")  # Recent data - moderate
         else:
             safety_margin = Decimal("0.55")  # Stale data - conservative
-        
+
         max_position = Decimal(str(settings.max_position_size))
         raw_available = min(alert.yes_size_available, alert.no_size_available)
-        available_size = (raw_available * safety_margin).quantize(Decimal("1"), rounding="ROUND_DOWN")
-        
+        available_size = (raw_available * safety_margin).quantize(
+            Decimal("1"), rounding="ROUND_DOWN"
+        )
+
         log.debug(
             "Dynamic safety margin applied",
             data_age_ms=f"{data_age_ms:.0f}ms",
@@ -384,9 +393,15 @@ class RealtimeArbitrageBot:
         # Calculate minimum shares needed so BOTH orders meet Polymarket's $1 minimum
         # Formula: shares = $1.10 / price (using $1.10 for safety margin)
         min_order_value = Decimal("1.10")  # Polymarket minimum is $1, add buffer
-        min_shares_for_yes = (min_order_value / alert.yes_ask).quantize(Decimal("1"), rounding="ROUND_UP")
-        min_shares_for_no = (min_order_value / alert.no_ask).quantize(Decimal("1"), rounding="ROUND_UP")
-        min_required_size = max(min_shares_for_yes, min_shares_for_no, Decimal("5"))  # At least 5 shares
+        min_shares_for_yes = (min_order_value / alert.yes_ask).quantize(
+            Decimal("1"), rounding="ROUND_UP"
+        )
+        min_shares_for_no = (min_order_value / alert.no_ask).quantize(
+            Decimal("1"), rounding="ROUND_UP"
+        )
+        min_required_size = max(
+            min_shares_for_yes, min_shares_for_no, Decimal("5")
+        )  # At least 5 shares
 
         # Skip if insufficient liquidity on either side
         if available_size < min_required_size:
@@ -420,7 +435,10 @@ class RealtimeArbitrageBot:
                 if current_balance >= min_required_size * alert.combined_cost:
                     # We have enough for at least minimum trade
                     max_affordable_size = current_balance / alert.combined_cost
-                    trade_size = min(trade_size, max_affordable_size.quantize(Decimal("1"), rounding="ROUND_DOWN"))
+                    trade_size = min(
+                        trade_size,
+                        max_affordable_size.quantize(Decimal("1"), rounding="ROUND_DOWN"),
+                    )
                     required_cost = trade_size * alert.combined_cost
                     log.info(
                         "Reduced trade size to fit balance",
@@ -438,7 +456,9 @@ class RealtimeArbitrageBot:
                         available=float(current_balance),
                     )
                     # Save near-miss alert for visibility
-                    asyncio.create_task(self._save_insufficient_balance_alert(alert, required_cost, current_balance))
+                    asyncio.create_task(
+                        self._save_insufficient_balance_alert(alert, required_cost, current_balance)
+                    )
                     return
 
             opportunity = ArbitrageOpportunity(
@@ -467,7 +487,9 @@ class RealtimeArbitrageBot:
             try:
                 # Pass detection timestamp for latency tracking (convert to ms)
                 detection_timestamp_ms = alert.timestamp * 1000
-                result = await self.executor.execute(opportunity, detection_timestamp_ms=detection_timestamp_ms)
+                result = await self.executor.execute(
+                    opportunity, detection_timestamp_ms=detection_timestamp_ms
+                )
 
                 self.stats.trades_executed += 1
                 if result.status == ExecutionStatus.FILLED:
@@ -567,16 +589,18 @@ class RealtimeArbitrageBot:
                 hour = now.strftime("%Y-%m-%d %H:00")
 
                 # Record stats (non-blocking)
-                asyncio.create_task(StatsHistoryRepository.insert(
-                    timestamp=now.isoformat(),
-                    hour=hour,
-                    markets=scanner_stats.get("markets", 0),
-                    price_updates=price_updates_delta,
-                    arbitrage_alerts=self.stats.opportunities_found,
-                    executions_attempted=self.stats.trades_executed,
-                    executions_filled=self.stats.trades_successful,
-                    ws_connected=scanner_stats.get("ws_connected", False),
-                ))
+                asyncio.create_task(
+                    StatsHistoryRepository.insert(
+                        timestamp=now.isoformat(),
+                        hour=hour,
+                        markets=scanner_stats.get("markets", 0),
+                        price_updates=price_updates_delta,
+                        arbitrage_alerts=self.stats.opportunities_found,
+                        executions_attempted=self.stats.trades_executed,
+                        executions_filled=self.stats.trades_successful,
+                        ws_connected=scanner_stats.get("ws_connected", False),
+                    )
+                )
 
                 log.debug(
                     "Stats history recorded",
@@ -620,18 +644,172 @@ class RealtimeArbitrageBot:
                 minute = now.strftime("%Y-%m-%d %H:%M")
 
                 # Record stats (non-blocking)
-                asyncio.create_task(MinuteStatsRepository.insert(
-                    timestamp=now.isoformat(),
-                    minute=minute,
-                    price_updates=price_updates_delta,
-                    ws_connected=scanner_stats.get("ws_connected", False),
-                ))
+                asyncio.create_task(
+                    MinuteStatsRepository.insert(
+                        timestamp=now.isoformat(),
+                        minute=minute,
+                        price_updates=price_updates_delta,
+                        ws_connected=scanner_stats.get("ws_connected", False),
+                    )
+                )
 
             except Exception as e:
                 log.error("Minute stats task error", error=str(e))
 
             # Wait for next record
             await asyncio.sleep(self.MINUTE_STATS_INTERVAL)
+
+    async def _merge_check_loop(self) -> None:
+        """Background task that periodically checks for and merges accumulated positions."""
+        from rarb.executor.async_clob import create_async_clob_client
+        from rarb.executor.merge import merge_positions
+        from rarb.api.gamma import GammaClient
+        from collections import defaultdict
+
+        # Wait before first check
+        await asyncio.sleep(120)
+
+        log.info("Merge check task started", interval=f"{self.MERGE_CHECK_INTERVAL}s")
+
+        while self._running:
+            try:
+                # Get current positions
+                async_client = await create_async_clob_client()
+                if not async_client:
+                    await asyncio.sleep(self.MERGE_CHECK_INTERVAL)
+                    continue
+
+                positions = await async_client.get_positions()
+                await async_client.close()
+
+                if not positions:
+                    await asyncio.sleep(self.MERGE_CHECK_INTERVAL)
+                    continue
+
+                # Group positions by condition_id
+                # Position format: {"asset": token_id, "size": "30.0", "market": slug, "outcome": "Yes/No", ...}
+                by_condition: dict[str, dict] = defaultdict(
+                    lambda: {"yes": Decimal("0"), "no": Decimal("0"), "slug": "", "neg_risk": None}
+                )
+
+                for pos in positions:
+                    size = Decimal(str(pos.get("size", "0")))
+                    if size <= 0:
+                        continue
+
+                    outcome = pos.get("outcome", "").lower()
+                    condition_id = pos.get("conditionId", "")
+
+                    if not condition_id:
+                        continue
+
+                    if "yes" in outcome:
+                        by_condition[condition_id]["yes"] += size
+                    elif "no" in outcome:
+                        by_condition[condition_id]["no"] += size
+
+                    by_condition[condition_id]["slug"] = pos.get("market", "")
+
+                # Find mergeable positions (have both YES and NO)
+                mergeable = []
+                for condition_id, data in by_condition.items():
+                    yes_size = data["yes"]
+                    no_size = data["no"]
+                    merge_amount = min(yes_size, no_size)
+
+                    if merge_amount >= Decimal("1"):  # At least 1 share to merge
+                        mergeable.append(
+                            {
+                                "condition_id": condition_id,
+                                "yes_size": yes_size,
+                                "no_size": no_size,
+                                "merge_amount": merge_amount,
+                                "slug": data["slug"],
+                            }
+                        )
+
+                if not mergeable:
+                    log.debug("No mergeable positions found")
+                    await asyncio.sleep(self.MERGE_CHECK_INTERVAL)
+                    continue
+
+                log.info(
+                    "Found mergeable positions",
+                    count=len(mergeable),
+                    total_value=sum(m["merge_amount"] for m in mergeable),
+                )
+
+                # Fetch neg_risk status for each market
+                gamma = GammaClient()
+
+                for item in mergeable:
+                    try:
+                        # Get market info to check neg_risk
+                        market = await gamma.get_market_by_condition_id(item["condition_id"])
+
+                        if market is None:
+                            # Try by slug
+                            market = await gamma.get_market_by_slug(item["slug"])
+
+                        # Determine neg_risk status
+                        neg_risk = False
+                        if market:
+                            # Check if market has neg_risk attribute or infer from tokens
+                            neg_risk = getattr(market, "neg_risk", False) or False
+
+                        if not neg_risk:
+                            # Non-neg_risk markets can't be merged via standard CTF
+                            # They need to wait for resolution
+                            log.info(
+                                "Skipping non-neg_risk market (must wait for resolution)",
+                                condition_id=item["condition_id"][:20] + "...",
+                                merge_amount=float(item["merge_amount"]),
+                                slug=item["slug"][:40],
+                            )
+                            continue
+
+                        # Execute merge for neg_risk markets
+                        log.info(
+                            "Executing periodic merge",
+                            condition_id=item["condition_id"][:20] + "...",
+                            merge_amount=float(item["merge_amount"]),
+                            slug=item["slug"][:40],
+                        )
+
+                        success, error = await merge_positions(
+                            condition_id=item["condition_id"],
+                            amount=item["merge_amount"],
+                            neg_risk=True,
+                        )
+
+                        if success:
+                            log.info(
+                                "Periodic merge successful",
+                                amount=float(item["merge_amount"]),
+                                slug=item["slug"][:40],
+                            )
+                            # Refresh balance after successful merge
+                            await self._refresh_balance()
+                        else:
+                            log.warning(
+                                "Periodic merge failed",
+                                error=error,
+                                slug=item["slug"][:40],
+                            )
+
+                    except Exception as e:
+                        log.error(
+                            "Error processing mergeable position",
+                            condition_id=item["condition_id"][:20] + "...",
+                            error=str(e),
+                        )
+
+                await gamma.close()
+
+            except Exception as e:
+                log.error("Merge check task error", error=str(e))
+
+            await asyncio.sleep(self.MERGE_CHECK_INTERVAL)
 
     async def _refresh_balance(self) -> Decimal:
         """Fetch current USDC balance from chain and update cache."""
@@ -692,7 +870,7 @@ class RealtimeArbitrageBot:
 
     async def _record_startup_balance(self) -> None:
         """Record the initial balance at bot startup for TRUE P&L tracking.
-        
+
         This is the source of truth for calculating actual gains/losses.
         Money should NEVER be invisible - this ensures we always know
         where we started from.
@@ -706,7 +884,7 @@ class RealtimeArbitrageBot:
             tracker = PortfolioTracker()
             balances = await tracker.get_current_balances()
             usdc_balance = float(balances.get("polymarket_usdc", 0))
-            
+
             # Get positions value
             positions_value = 0.0
             try:
@@ -719,11 +897,11 @@ class RealtimeArbitrageBot:
                         positions_value += size * cur_price
             except Exception as e:
                 log.debug("Failed to fetch positions for startup balance", error=str(e))
-            
+
             total_value = usdc_balance + positions_value
             session_id = str(uuid4())[:8]  # Short session ID
             self._session_id = session_id  # Store for linking future records
-            
+
             await BalanceHistoryRepository.insert(
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 usdc_balance=usdc_balance,
@@ -733,7 +911,7 @@ class RealtimeArbitrageBot:
                 notes=f"Bot started in {'DRY RUN' if get_settings().dry_run else 'LIVE'} mode",
                 session_id=session_id,
             )
-            
+
             log.info(
                 "Startup balance recorded - THIS IS YOUR P&L BASELINE",
                 usdc=f"${usdc_balance:.2f}",
@@ -741,7 +919,7 @@ class RealtimeArbitrageBot:
                 total=f"${total_value:.2f}",
                 session_id=session_id,
             )
-            
+
         except Exception as e:
             log.error("CRITICAL: Failed to record startup balance", error=str(e))
             raise
@@ -785,6 +963,9 @@ class RealtimeArbitrageBot:
             self._redemption_task = asyncio.create_task(self._auto_redemption_loop())
             log.info("Auto-redemption task scheduled")
 
+            self._merge_check_task = asyncio.create_task(self._merge_check_loop())
+            log.info("Merge check task scheduled")
+
             # Start balance tracking for trade validation
             self._balance_refresh_task = asyncio.create_task(self._balance_refresh_loop())
             log.info("Balance refresh task scheduled")
@@ -823,6 +1004,14 @@ class RealtimeArbitrageBot:
             except asyncio.CancelledError:
                 pass
             log.info("Auto-redemption task cancelled")
+
+        if self._merge_check_task and not self._merge_check_task.done():
+            self._merge_check_task.cancel()
+            try:
+                await self._merge_check_task
+            except asyncio.CancelledError:
+                pass
+            log.info("Merge check task cancelled")
 
         if self._stats_history_task and not self._stats_history_task.done():
             self._stats_history_task.cancel()

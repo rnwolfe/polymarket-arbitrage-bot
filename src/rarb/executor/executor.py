@@ -57,9 +57,11 @@ def _configure_proxy_for_clob() -> bool:
         no_proxy = "ws-subscriptions-clob.polymarket.com,gamma-api.polymarket.com"
         os.environ["NO_PROXY"] = no_proxy
 
-        log.info("Configured SOCKS5 proxy for CLOB API",
-                 proxy_host=settings.socks5_proxy_host,
-                 proxy_port=settings.socks5_proxy_port)
+        log.info(
+            "Configured SOCKS5 proxy for CLOB API",
+            proxy_host=settings.socks5_proxy_host,
+            proxy_port=settings.socks5_proxy_port,
+        )
         return True
     return False
 
@@ -71,6 +73,7 @@ _proxy_enabled = _configure_proxy_for_clob()
 try:
     from py_clob_client.client import ClobClient
     from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType
+
     CLOB_CLIENT_AVAILABLE = True
 except ImportError:
     CLOB_CLIENT_AVAILABLE = False
@@ -136,11 +139,17 @@ class ExecutionTiming:
         # Compute deltas (ms between steps)
         deltas = {}
         if self.opportunity_detected and self.execute_start:
-            deltas["detection_to_execute_ms"] = round(self.execute_start - self.opportunity_detected, 1)
+            deltas["detection_to_execute_ms"] = round(
+                self.execute_start - self.opportunity_detected, 1
+            )
         if self.execute_start and self.neg_risk_lookup_start:
-            deltas["execute_to_neg_risk_ms"] = round(self.neg_risk_lookup_start - self.execute_start, 1)
+            deltas["execute_to_neg_risk_ms"] = round(
+                self.neg_risk_lookup_start - self.execute_start, 1
+            )
         if self.neg_risk_lookup_start and self.neg_risk_lookup_end:
-            deltas["neg_risk_lookup_ms"] = round(self.neg_risk_lookup_end - self.neg_risk_lookup_start, 1)
+            deltas["neg_risk_lookup_ms"] = round(
+                self.neg_risk_lookup_end - self.neg_risk_lookup_start, 1
+            )
         if self.order_signing_start and self.order_signing_end:
             deltas["order_signing_ms"] = round(self.order_signing_end - self.order_signing_start, 1)
         if self.yes_submit_start and self.yes_submit_end:
@@ -237,11 +246,15 @@ class OrderExecutor:
         # Initialize CLOB client if credentials available
         if CLOB_CLIENT_AVAILABLE and settings.poly_api_key and settings.poly_api_secret:
             try:
-                private_key = settings.private_key.get_secret_value() if settings.private_key else None
+                private_key = (
+                    settings.private_key.get_secret_value() if settings.private_key else None
+                )
                 creds = ApiCreds(
                     api_key=settings.poly_api_key,
                     api_secret=settings.poly_api_secret.get_secret_value(),
-                    api_passphrase=settings.poly_api_passphrase.get_secret_value() if settings.poly_api_passphrase else "",
+                    api_passphrase=settings.poly_api_passphrase.get_secret_value()
+                    if settings.poly_api_passphrase
+                    else "",
                 )
                 self._clob_client = ClobClient(
                     host=self.clob_base_url,
@@ -251,7 +264,9 @@ class OrderExecutor:
                     signature_type=0,  # EOA wallet
                     funder=settings.wallet_address,
                 )
-                log.info("CLOB client initialized with L2 credentials", wallet=settings.wallet_address)
+                log.info(
+                    "CLOB client initialized with L2 credentials", wallet=settings.wallet_address
+                )
             except Exception as e:
                 log.error("Failed to initialize CLOB client", error=str(e))
                 self._clob_client = None
@@ -351,7 +366,15 @@ class OrderExecutor:
 
             self._save_orders_state()
 
-    async def _submit_order_async(self, token_id: str, side: str, price: float, size: float, neg_risk: Optional[bool] = None) -> dict[str, Any]:
+    async def _submit_order_async(
+        self,
+        token_id: str,
+        side: str,
+        price: float,
+        size: float,
+        neg_risk: Optional[bool] = None,
+        fee_rate_bps: Optional[int] = None,
+    ) -> dict[str, Any]:
         """
         Submit an order using the async CLOB client (low-latency).
 
@@ -361,6 +384,7 @@ class OrderExecutor:
             price: Price per token
             size: Number of tokens
             neg_risk: Whether this is a neg_risk market. If None, auto-detects.
+            fee_rate_bps: Fee rate in basis points. If None, auto-detects.
 
         Returns:
             API response
@@ -376,14 +400,19 @@ class OrderExecutor:
                 price=price,
                 size=size,
                 neg_risk=neg_risk,
+                fee_rate_bps=fee_rate_bps,
             )
-            log.info("Order submitted (async)", token_id=token_id[:10], side=side, response=response)
+            log.info(
+                "Order submitted (async)", token_id=token_id[:10], side=side, response=response
+            )
             return response
         except Exception as e:
             log.error("Async order submission error", error=str(e))
             raise
 
-    def _submit_order_sync(self, token_id: str, side: str, price: float, size: float) -> dict[str, Any]:
+    def _submit_order_sync(
+        self, token_id: str, side: str, price: float, size: float
+    ) -> dict[str, Any]:
         """
         Submit an order using the official CLOB client (fallback).
 
@@ -599,11 +628,13 @@ class OrderExecutor:
                     # Send notification about unwind
                     try:
                         notifier = get_notifier()
-                        asyncio.create_task(notifier.send_message(
-                            f"🔄 Emergency unwind: Sold {size:.2f} tokens at ${unwind_price:.4f} "
-                            f"(bought at ${buy_price:.4f}). Loss: ${loss:.2f}\n"
-                            f"Market: {market_name[:50]}"
-                        ))
+                        asyncio.create_task(
+                            notifier.send_message(
+                                f"🔄 Emergency unwind: Sold {size:.2f} tokens at ${unwind_price:.4f} "
+                                f"(bought at ${buy_price:.4f}). Loss: ${loss:.2f}\n"
+                                f"Market: {market_name[:50]}"
+                            )
+                        )
                     except Exception:
                         pass
 
@@ -645,14 +676,16 @@ class OrderExecutor:
 
         try:
             notifier = get_notifier()
-            asyncio.create_task(notifier.send_message(
-                f"⚠️ CRITICAL: ALL UNWIND ATTEMPTS FAILED\n"
-                f"Could not sell {size:.2f} tokens\n"
-                f"Token: {token_id[:16]}...\n"
-                f"Buy price: ${buy_price:.4f}\n"
-                f"Market: {market_name[:50]}\n"
-                f"MANUAL INTERVENTION REQUIRED"
-            ))
+            asyncio.create_task(
+                notifier.send_message(
+                    f"⚠️ CRITICAL: ALL UNWIND ATTEMPTS FAILED\n"
+                    f"Could not sell {size:.2f} tokens\n"
+                    f"Token: {token_id[:16]}...\n"
+                    f"Buy price: ${buy_price:.4f}\n"
+                    f"Market: {market_name[:50]}\n"
+                    f"MANUAL INTERVENTION REQUIRED"
+                )
+            )
         except Exception:
             pass
 
@@ -704,22 +737,42 @@ class OrderExecutor:
                                 yes_status = results[idx]
                                 status_str = yes_status.get("status", "").lower()
                                 yes_filled = status_str in ("filled", "matched")
-                                log.debug("YES order status check", status=status_str, filled=yes_filled)
+                                log.debug(
+                                    "YES order status check", status=status_str, filled=yes_filled
+                                )
                                 # If order is cancelled/expired, it won't fill - stop waiting
-                                if status_str in ("canceled", "cancelled", "expired", "not_matched"):
-                                    log.info("YES order cancelled/expired, won't fill", status=status_str)
+                                if status_str in (
+                                    "canceled",
+                                    "cancelled",
+                                    "expired",
+                                    "not_matched",
+                                ):
+                                    log.info(
+                                        "YES order cancelled/expired, won't fill", status=status_str
+                                    )
                             else:
-                                log.warning("YES order status check failed", error=str(results[idx]))
+                                log.warning(
+                                    "YES order status check failed", error=str(results[idx])
+                                )
                             idx += 1
                         if no_order_id and not no_filled and idx < len(results):
                             if not isinstance(results[idx], Exception):
                                 no_status = results[idx]
                                 status_str = no_status.get("status", "").lower()
                                 no_filled = status_str in ("filled", "matched")
-                                log.debug("NO order status check", status=status_str, filled=no_filled)
+                                log.debug(
+                                    "NO order status check", status=status_str, filled=no_filled
+                                )
                                 # If order is cancelled/expired, it won't fill - stop waiting
-                                if status_str in ("canceled", "cancelled", "expired", "not_matched"):
-                                    log.info("NO order cancelled/expired, won't fill", status=status_str)
+                                if status_str in (
+                                    "canceled",
+                                    "cancelled",
+                                    "expired",
+                                    "not_matched",
+                                ):
+                                    log.info(
+                                        "NO order cancelled/expired, won't fill", status=status_str
+                                    )
                             else:
                                 log.warning("NO order status check failed", error=str(results[idx]))
                 else:
@@ -833,9 +886,7 @@ class OrderExecutor:
             log.error("Failed to cancel all orders", error=str(e))
             return {"canceled": [], "not_canceled": {}, "error": str(e)}
 
-    async def execute_dry_run(
-        self, opportunity: ArbitrageOpportunity
-    ) -> ExecutionResult:
+    async def execute_dry_run(self, opportunity: ArbitrageOpportunity) -> ExecutionResult:
         """
         Simulate execution without placing real orders.
 
@@ -906,15 +957,17 @@ class OrderExecutor:
         # Send Slack notification for dry run
         try:
             notifier = get_notifier()
-            asyncio.create_task(notifier.notify_trade(
-                platform="polymarket",
-                market=opportunity.market.question,
-                side="buy",
-                outcome="yes+no",
-                price=opportunity.combined_cost,
-                size=opportunity.max_trade_size,
-                status="simulated",
-            ))
+            asyncio.create_task(
+                notifier.notify_trade(
+                    platform="polymarket",
+                    market=opportunity.market.question,
+                    side="buy",
+                    outcome="yes+no",
+                    price=opportunity.combined_cost,
+                    size=opportunity.max_trade_size,
+                    status="simulated",
+                )
+            )
         except Exception:
             pass
 
@@ -965,40 +1018,54 @@ class OrderExecutor:
         timestamp = result.timestamp.isoformat()
 
         # Log trades that were FILLED or PARTIAL (any actual fill)
-        if result.yes_order.status in (ExecutionStatus.FILLED, ExecutionStatus.PARTIAL) and \
-           (result.yes_order.filled_size or Decimal(0)) > 0:
-            self._trade_log.log_trade(Trade(
-                timestamp=timestamp,
-                platform="polymarket",
-                market_id=opp.market.condition_id,
-                market_name=opp.market.question,
-                side="buy",
-                outcome="yes",
-                price=float(result.yes_order.price),
-                size=float(result.yes_order.filled_size or result.yes_order.size),
-                cost=float(result.yes_order.price * (result.yes_order.filled_size or result.yes_order.size)),
-                order_id=result.yes_order.order_id,
-                strategy="single_market",
-                profit_expected=float(opp.expected_profit_usd) / 2,  # Split between both orders
-            ))
+        if (
+            result.yes_order.status in (ExecutionStatus.FILLED, ExecutionStatus.PARTIAL)
+            and (result.yes_order.filled_size or Decimal(0)) > 0
+        ):
+            self._trade_log.log_trade(
+                Trade(
+                    timestamp=timestamp,
+                    platform="polymarket",
+                    market_id=opp.market.condition_id,
+                    market_name=opp.market.question,
+                    side="buy",
+                    outcome="yes",
+                    price=float(result.yes_order.price),
+                    size=float(result.yes_order.filled_size or result.yes_order.size),
+                    cost=float(
+                        result.yes_order.price
+                        * (result.yes_order.filled_size or result.yes_order.size)
+                    ),
+                    order_id=result.yes_order.order_id,
+                    strategy="single_market",
+                    profit_expected=float(opp.expected_profit_usd) / 2,  # Split between both orders
+                )
+            )
 
         # Log trades that were FILLED or PARTIAL (any actual fill)
-        if result.no_order.status in (ExecutionStatus.FILLED, ExecutionStatus.PARTIAL) and \
-           (result.no_order.filled_size or Decimal(0)) > 0:
-            self._trade_log.log_trade(Trade(
-                timestamp=timestamp,
-                platform="polymarket",
-                market_id=opp.market.condition_id,
-                market_name=opp.market.question,
-                side="buy",
-                outcome="no",
-                price=float(result.no_order.price),
-                size=float(result.no_order.filled_size or result.no_order.size),
-                cost=float(result.no_order.price * (result.no_order.filled_size or result.no_order.size)),
-                order_id=result.no_order.order_id,
-                strategy="single_market",
-                profit_expected=float(opp.expected_profit_usd) / 2,
-            ))
+        if (
+            result.no_order.status in (ExecutionStatus.FILLED, ExecutionStatus.PARTIAL)
+            and (result.no_order.filled_size or Decimal(0)) > 0
+        ):
+            self._trade_log.log_trade(
+                Trade(
+                    timestamp=timestamp,
+                    platform="polymarket",
+                    market_id=opp.market.condition_id,
+                    market_name=opp.market.question,
+                    side="buy",
+                    outcome="no",
+                    price=float(result.no_order.price),
+                    size=float(result.no_order.filled_size or result.no_order.size),
+                    cost=float(
+                        result.no_order.price
+                        * (result.no_order.filled_size or result.no_order.size)
+                    ),
+                    order_id=result.no_order.order_id,
+                    strategy="single_market",
+                    profit_expected=float(opp.expected_profit_usd) / 2,
+                )
+            )
 
     async def execute(
         self,
@@ -1073,6 +1140,7 @@ class OrderExecutor:
                 # The background keepalive task runs every 3s, so connections should stay warm
                 # This avoids the 100-300ms forced warmup on every execution
                 import time
+
                 warmup_start = ExecutionTiming.now_ms()
                 idle_time = time.time() - async_client._last_request_time
                 if idle_time > 2.0:
@@ -1084,13 +1152,15 @@ class OrderExecutor:
 
                 # Use optimized parallel execution: batch neg_risk + sign + submit
                 timing.order_signing_start = ExecutionTiming.now_ms()
-                orders: list[tuple[str, str, float, float, Optional[bool]]] = [
+                fee_rate_bps = getattr(opportunity.market, "fee_rate_bps", 0)
+                orders: list[tuple[str, str, float, float, Optional[bool], Optional[int]]] = [
                     (
                         opportunity.market.yes_token.token_id,
                         "BUY",
                         float(opportunity.yes_ask),
                         float(opportunity.max_trade_size),
                         None,  # Auto-detect neg_risk
+                        fee_rate_bps,
                     ),
                     (
                         opportunity.market.no_token.token_id,
@@ -1098,6 +1168,7 @@ class OrderExecutor:
                         float(opportunity.no_ask),
                         float(opportunity.max_trade_size),
                         None,  # Auto-detect neg_risk
+                        fee_rate_bps,
                     ),
                 ]
                 responses, order_timing = await async_client.submit_orders_parallel(orders)
@@ -1209,9 +1280,10 @@ class OrderExecutor:
         # For GTC orders: check trades API for actual fill confirmation
         # The order API may return empty for filled orders (same as FOK behavior)
         # Use retry loop since trades API may have indexing delay
-        if yes_result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED) or \
-           no_result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED):
-            
+        if yes_result.status in (
+            ExecutionStatus.PENDING,
+            ExecutionStatus.SUBMITTED,
+        ) or no_result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED):
             async_client = self._async_client
             if async_client:
                 # Retry up to 3 times with increasing delays (100ms, 300ms, 600ms)
@@ -1219,52 +1291,77 @@ class OrderExecutor:
                 for attempt in range(max_retries):
                     wait_time = 0.1 * (attempt + 1) * 2  # 0.2s, 0.4s, 0.6s
                     await asyncio.sleep(wait_time)
-                    
+
                     try:
                         trades = await async_client.get_trades()
                         all_resolved = True
-                        
+
                         if trades:
                             for result, name in [(yes_result, "YES"), (no_result, "NO")]:
-                                if result.order_id and result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED):
+                                if result.order_id and result.status in (
+                                    ExecutionStatus.PENDING,
+                                    ExecutionStatus.SUBMITTED,
+                                ):
                                     # Find trades matching this order
-                                    order_trades = [t for t in trades if t.get("order_id") == result.order_id]
+                                    order_trades = [
+                                        t for t in trades if t.get("order_id") == result.order_id
+                                    ]
                                     if order_trades:
                                         # Sum filled size from all trades for this order
                                         filled = sum(float(t.get("size", 0)) for t in order_trades)
                                         result.filled_size = Decimal(str(filled))
-                                        
+
                                         if filled >= float(result.size) * 0.99:  # Fully filled
                                             result.status = ExecutionStatus.FILLED
-                                            log.info(f"{name} order FILLED (from trades)", filled=filled, attempt=attempt+1)
-                                            self._update_order_status(result.order_id, "filled", filled)
+                                            log.info(
+                                                f"{name} order FILLED (from trades)",
+                                                filled=filled,
+                                                attempt=attempt + 1,
+                                            )
+                                            self._update_order_status(
+                                                result.order_id, "filled", filled
+                                            )
                                         elif filled > 0:  # Partial fill
                                             result.status = ExecutionStatus.PARTIAL
-                                            log.info(f"{name} order PARTIAL (from trades)", filled=filled, requested=float(result.size), attempt=attempt+1)
+                                            log.info(
+                                                f"{name} order PARTIAL (from trades)",
+                                                filled=filled,
+                                                requested=float(result.size),
+                                                attempt=attempt + 1,
+                                            )
                                             # Try to cancel remainder
                                             try:
                                                 await async_client.cancel_order(result.order_id)
                                             except:
                                                 pass  # Order may already be gone
-                                            self._update_order_status(result.order_id, "partial", filled)
+                                            self._update_order_status(
+                                                result.order_id, "partial", filled
+                                            )
                                     else:
                                         # No trades found yet - may still be indexing
                                         all_resolved = False
                         else:
                             all_resolved = False
-                        
+
                         # If all orders resolved or this is the last attempt, break
                         if all_resolved or attempt == max_retries - 1:
                             break
-                            
+
                     except Exception as e:
-                        log.warning("Failed to check trades API for GTC fills", error=str(e), attempt=attempt+1)
+                        log.warning(
+                            "Failed to check trades API for GTC fills",
+                            error=str(e),
+                            attempt=attempt + 1,
+                        )
                         if attempt == max_retries - 1:
                             break
-                
+
                 # After retries, cancel any still-pending orders (they likely didn't fill)
                 for result, name in [(yes_result, "YES"), (no_result, "NO")]:
-                    if result.order_id and result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED):
+                    if result.order_id and result.status in (
+                        ExecutionStatus.PENDING,
+                        ExecutionStatus.SUBMITTED,
+                    ):
                         log.info(f"{name} order not filled after {max_retries} checks - cancelling")
                         result.status = ExecutionStatus.CANCELLED
                         result.filled_size = Decimal(0)
@@ -1279,13 +1376,16 @@ class OrderExecutor:
         # Determine overall status
         # Trigger merge if both sides have any fills (FILLED or PARTIAL)
         both_have_fills = (
-            yes_result.status in (ExecutionStatus.FILLED, ExecutionStatus.PARTIAL) and
-            no_result.status in (ExecutionStatus.FILLED, ExecutionStatus.PARTIAL) and
-            (yes_result.filled_size or Decimal(0)) > 0 and
-            (no_result.filled_size or Decimal(0)) > 0
+            yes_result.status in (ExecutionStatus.FILLED, ExecutionStatus.PARTIAL)
+            and no_result.status in (ExecutionStatus.FILLED, ExecutionStatus.PARTIAL)
+            and (yes_result.filled_size or Decimal(0)) > 0
+            and (no_result.filled_size or Decimal(0)) > 0
         )
-        
-        if yes_result.status == ExecutionStatus.FILLED and no_result.status == ExecutionStatus.FILLED:
+
+        if (
+            yes_result.status == ExecutionStatus.FILLED
+            and no_result.status == ExecutionStatus.FILLED
+        ):
             status = ExecutionStatus.FILLED
             self.stats.successful += 1
             total_cost = opportunity.max_trade_size * opportunity.combined_cost
@@ -1298,17 +1398,17 @@ class OrderExecutor:
             if settings.auto_merge and not self.dry_run:
                 try:
                     from rarb.executor.merge import check_and_merge_position
-                    
+
                     merge_success, merged_amount, merge_error = await check_and_merge_position(
                         condition_id=opportunity.market.condition_id,
                         yes_filled_size=yes_result.filled_size or opportunity.max_trade_size,
                         no_filled_size=no_result.filled_size or opportunity.max_trade_size,
-                        neg_risk=getattr(opportunity.market, 'neg_risk', False),
+                        neg_risk=getattr(opportunity.market, "neg_risk", False),
                         market_title=opportunity.market.question,
                         combined_cost=opportunity.combined_cost,
                         profit_margin=opportunity.profit_pct,
                     )
-                    
+
                     if merge_success:
                         log.info(
                             "AUTO-MERGE SUCCESSFUL - Capital released",
@@ -1319,12 +1419,14 @@ class OrderExecutor:
                         try:
                             notifier = get_notifier()
                             profit_pct_display = float(opportunity.profit_pct) * 100
-                            asyncio.create_task(notifier.send_message(
-                                f"✅ Arbitrage + Merge Complete!\n"
-                                f"💰 Merged: ${float(merged_amount):.2f}\n"
-                                f"📈 Profit: ~{profit_pct_display:.2f}%\n"
-                                f"📊 Market: {opportunity.market.question[:50]}"
-                            ))
+                            asyncio.create_task(
+                                notifier.send_message(
+                                    f"✅ Arbitrage + Merge Complete!\n"
+                                    f"💰 Merged: ${float(merged_amount):.2f}\n"
+                                    f"📈 Profit: ~{profit_pct_display:.2f}%\n"
+                                    f"📊 Market: {opportunity.market.question[:50]}"
+                                )
+                            )
                         except Exception:
                             pass
                     else:
@@ -1344,32 +1446,34 @@ class OrderExecutor:
             # Both sides have partial fills - still attempt merge for matched portion
             status = ExecutionStatus.PARTIAL
             self.stats.partial += 1
-            merge_size = min(yes_result.filled_size or Decimal(0), no_result.filled_size or Decimal(0))
+            merge_size = min(
+                yes_result.filled_size or Decimal(0), no_result.filled_size or Decimal(0)
+            )
             total_cost = merge_size * opportunity.combined_cost
-            
+
             log.info(
                 "Both sides partially filled - attempting merge for matched portion",
                 yes_filled=float(yes_result.filled_size or 0),
                 no_filled=float(no_result.filled_size or 0),
                 merge_size=float(merge_size),
             )
-            
+
             # AUTO-MERGE the matched portion
             settings = get_settings()
             if settings.auto_merge and not self.dry_run and merge_size > 0:
                 try:
                     from rarb.executor.merge import check_and_merge_position
-                    
+
                     merge_success, merged_amount, merge_error = await check_and_merge_position(
                         condition_id=opportunity.market.condition_id,
                         yes_filled_size=merge_size,
                         no_filled_size=merge_size,
-                        neg_risk=getattr(opportunity.market, 'neg_risk', False),
+                        neg_risk=getattr(opportunity.market, "neg_risk", False),
                         market_title=opportunity.market.question,
                         combined_cost=opportunity.combined_cost,
                         profit_margin=opportunity.profit_pct,
                     )
-                    
+
                     if merge_success:
                         log.info(
                             "PARTIAL MERGE SUCCESSFUL",
@@ -1378,11 +1482,17 @@ class OrderExecutor:
                         )
                 except Exception as e:
                     log.error("Partial merge error", error=str(e))
-        elif yes_result.status == ExecutionStatus.FAILED and no_result.status == ExecutionStatus.FAILED:
+        elif (
+            yes_result.status == ExecutionStatus.FAILED
+            and no_result.status == ExecutionStatus.FAILED
+        ):
             status = ExecutionStatus.FAILED
             self.stats.failed += 1
             total_cost = Decimal("0")
-        elif yes_result.status == ExecutionStatus.CANCELLED and no_result.status == ExecutionStatus.CANCELLED:
+        elif (
+            yes_result.status == ExecutionStatus.CANCELLED
+            and no_result.status == ExecutionStatus.CANCELLED
+        ):
             # Both cancelled (timeout) - no position taken
             status = ExecutionStatus.CANCELLED
             self.stats.cancelled += 1
@@ -1398,7 +1508,10 @@ class OrderExecutor:
             total_cost = yes_cost + no_cost
 
             # Attempt immediate unwind of the filled side
-            if yes_result.status == ExecutionStatus.FILLED and no_result.status != ExecutionStatus.FILLED:
+            if (
+                yes_result.status == ExecutionStatus.FILLED
+                and no_result.status != ExecutionStatus.FILLED
+            ):
                 log.error(
                     "UNHEDGED POSITION: YES filled but NO did not! Attempting immediate unwind...",
                     yes_size=float(yes_result.filled_size),
@@ -1412,7 +1525,10 @@ class OrderExecutor:
                     buy_price=float(opportunity.yes_ask),
                     market_name=opportunity.market.question,
                 )
-            elif no_result.status == ExecutionStatus.FILLED and yes_result.status != ExecutionStatus.FILLED:
+            elif (
+                no_result.status == ExecutionStatus.FILLED
+                and yes_result.status != ExecutionStatus.FILLED
+            ):
                 log.error(
                     "UNHEDGED POSITION: NO filled but YES did not! Attempting immediate unwind...",
                     no_size=float(no_result.filled_size),
@@ -1434,7 +1550,9 @@ class OrderExecutor:
             no_order=no_result,
             status=status,
             total_cost=total_cost,
-            expected_profit=opportunity.expected_profit_usd if status == ExecutionStatus.FILLED else Decimal("0"),
+            expected_profit=opportunity.expected_profit_usd
+            if status == ExecutionStatus.FILLED
+            else Decimal("0"),
             timing=timing,
         )
 
@@ -1453,15 +1571,17 @@ class OrderExecutor:
         try:
             notifier = get_notifier()
             trade_status = "executed" if status == ExecutionStatus.FILLED else status.value
-            asyncio.create_task(notifier.notify_trade(
-                platform="polymarket",
-                market=opportunity.market.question,
-                side="buy",
-                outcome="yes+no",
-                price=opportunity.combined_cost,
-                size=opportunity.max_trade_size,
-                status=trade_status,
-            ))
+            asyncio.create_task(
+                notifier.notify_trade(
+                    platform="polymarket",
+                    market=opportunity.market.question,
+                    side="buy",
+                    outcome="yes+no",
+                    price=opportunity.combined_cost,
+                    size=opportunity.max_trade_size,
+                    status=trade_status,
+                )
+            )
         except Exception:
             pass
 
@@ -1498,7 +1618,9 @@ class OrderExecutor:
 
         if isinstance(response, dict):
             # Check for error
-            error_msg = response.get("error") or response.get("errorMsg") or response.get("message") or ""
+            error_msg = (
+                response.get("error") or response.get("errorMsg") or response.get("message") or ""
+            )
             if error_msg:
                 if "GTC" in error_msg.upper() or "NOT_FILLED" in error_msg.upper():
                     log.info("GTC order not filled - cancelled", error=error_msg)
