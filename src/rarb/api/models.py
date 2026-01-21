@@ -87,7 +87,7 @@ class Market:
     closed: bool = False
 
     end_date: Optional[datetime] = None
-    fee_rate_bps: int = 0
+    has_fees: bool = False
     neg_risk: bool = False
 
     # Order books (populated separately)

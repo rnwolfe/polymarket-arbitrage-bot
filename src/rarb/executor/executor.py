@@ -1152,7 +1152,10 @@ class OrderExecutor:
 
                 # Use optimized parallel execution: batch neg_risk + sign + submit
                 timing.order_signing_start = ExecutionTiming.now_ms()
-                fee_rate_bps = getattr(opportunity.market, "fee_rate_bps", 0)
+                # For order signing, fee_rate_bps must be 1000 for fee-enabled markets
+                has_fees = getattr(opportunity.market, "has_fees", False)
+                fee_rate_bps = 1000 if has_fees else 0
+
                 orders: list[tuple[str, str, float, float, Optional[bool], Optional[int]]] = [
                     (
                         opportunity.market.yes_token.token_id,

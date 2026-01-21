@@ -260,9 +260,8 @@ class GammaClient:
                 except (ValueError, TypeError) as e:
                     log.debug("Failed to parse end_date", raw=end_date_raw, error=str(e))
 
-            # Detect 15-minute crypto up/down markets which have high fees (1000 bps)
-            # Pattern: "Bitcoin Up or Down - January 21, 11:45AM-12:00PM ET"
-            fee_rate_bps = 0
+            # Detect 15-minute crypto up/down markets which have dynamic fees
+            has_fees = False
             question_lower = data.get("question", "").lower()
             if (
                 "up or down" in question_lower
@@ -272,11 +271,10 @@ class GammaClient:
                     for time_marker in ["AM ET", "PM ET", "AM-", "PM-"]
                 )
             ):
-                fee_rate_bps = 1000
-                log.info(
-                    "Detected high-fee 15-min market",
+                has_fees = True
+                log.debug(
+                    "Detected fee-enabled 15-min market",
                     question=data.get("question", "")[:50],
-                    fee_rate_bps=fee_rate_bps,
                 )
 
             return Market(
@@ -291,7 +289,7 @@ class GammaClient:
                 active=data.get("active", True),
                 closed=data.get("closed", False),
                 end_date=end_date,
-                fee_rate_bps=fee_rate_bps,
+                has_fees=has_fees,
                 neg_risk=data.get("negRisk", False),
             )
 

@@ -13,6 +13,24 @@ from rarb.utils.logging import get_logger
 log = get_logger(__name__)
 
 
+def calculate_taker_fee(price: Decimal, shares: Decimal) -> Decimal:
+    """
+    Calculate taker fee for 15-minute crypto markets.
+
+    Formula: fee = shares * price * 0.25 * (price * (1 - price))^2
+
+    This creates a curve where max fee is 1.56% at $0.50 price,
+    decreasing toward extremes.
+    """
+    if price <= Decimal("0") or price >= Decimal("1"):
+        return Decimal("0")
+
+    # fee = shares * price * 0.25 * (price * (1 - price))^2
+    price_factor = price * (Decimal("1") - price)
+    fee = shares * price * Decimal("0.25") * (price_factor**2)
+    return fee
+
+
 @dataclass
 class AnalyzerConfig:
     """Configuration for the arbitrage analyzer."""
@@ -96,11 +114,20 @@ class ArbitrageAnalyzer:
             return None
 
         # Calculate combined cost and fees
-        fee_rate_bps = getattr(snapshot.market, "fee_rate_bps", 0)
-        fee_rate = Decimal(str(fee_rate_bps)) / Decimal("10000")
+        has_fees = getattr(snapshot.market, "has_fees", False)
 
         combined_cost = yes_ask + no_ask
-        total_fees = combined_cost * fee_rate
+
+        # Calculate fees for fee-enabled markets (15-min crypto)
+        if has_fees:
+            # For arbitrage, we buy 1 share of each at the ask prices
+            # Fee formula: shares * price * 0.25 * (price * (1 - price))^2
+            yes_fee = calculate_taker_fee(yes_ask, Decimal("1"))
+            no_fee = calculate_taker_fee(no_ask, Decimal("1"))
+            total_fees = yes_fee + no_fee
+        else:
+            total_fees = Decimal("0")
+
         combined_cost_with_fees = combined_cost + total_fees
 
         # Check if arbitrage exists (combined cost with fees < 1.0)
