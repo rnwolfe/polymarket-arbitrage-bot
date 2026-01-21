@@ -1046,7 +1046,8 @@ def positions() -> None:
 @click.option("--all", "sell_all", is_flag=True, help="Sell all open positions")
 @click.option("--min-value", type=float, default=0.01, help="Minimum position value to sell (default: $0.01)")
 @click.option("--dry-run/--live", default=True, help="Dry run mode (default: dry run)")
-def sell_positions(token_id: Optional[str], sell_all: bool, min_value: float, dry_run: bool) -> None:
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+def sell_positions(token_id: Optional[str], sell_all: bool, min_value: float, dry_run: bool, yes: bool) -> None:
     """Sell open positions at market price.
     
     Use this to liquidate orphaned or unwanted positions.
@@ -1139,7 +1140,7 @@ def sell_positions(token_id: Optional[str], sell_all: bool, min_value: float, dr
             return
 
         # Confirm
-        if not click.confirm(f"\nSell {len(open_positions)} positions for ~${total_value:.2f}?"):
+        if not yes and not click.confirm(f"\nSell {len(open_positions)} positions for ~${total_value:.2f}?"):
             console.print("[dim]Cancelled[/dim]")
             return
 
