@@ -274,12 +274,17 @@ class GammaClient:
                 tick_size = Decimal("0.01")
 
             max_incentive_spread = _parse_decimal(
-                data.get("maxIncentiveSpread")
+                data.get("rewardsMaxSpread")
+                or data.get("maxIncentiveSpread")
                 or data.get("max_incentive_spread")
                 or data.get("maxIncentiveSpreadValue")
             )
+            if max_incentive_spread is not None and max_incentive_spread > 1:
+                max_incentive_spread = max_incentive_spread / Decimal("100")
+
             min_incentive_size = _parse_decimal(
-                data.get("minIncentiveSize")
+                data.get("rewardsMinSize")
+                or data.get("minIncentiveSize")
                 or data.get("min_incentive_size")
                 or data.get("minIncentiveSizeValue")
             )
