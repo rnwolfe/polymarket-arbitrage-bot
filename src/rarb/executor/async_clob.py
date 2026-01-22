@@ -204,6 +204,7 @@ class AsyncClobClient:
         self._last_request_time: float = 0  # Track last request for keep-alive
         self._keepalive_task: Optional[asyncio.Task] = None
         self._keepalive_interval: float = 3.0  # Refresh every 3s (connections go cold at ~5s)
+        self._orders_endpoint_available: bool = True
         log.info("AsyncClobClient initialized", address=self.address)
 
     async def warmup(self, num_connections: int = 2, force: bool = False):
@@ -929,6 +930,9 @@ class AsyncClobClient:
 
     async def get_orders(self) -> list[dict]:
         """Get open orders."""
+        if not self._orders_endpoint_available:
+            return []
+
         path = "/orders"
         headers = self._get_l2_headers("GET", path)
 
@@ -936,6 +940,10 @@ class AsyncClobClient:
             f"{self.host}{path}",
             headers=headers,
         )
+        if response.status_code == 405:
+            self._orders_endpoint_available = False
+            log.warning("Orders endpoint not available; skipping order sync")
+            return []
         if response.status_code != 200:
             log.error(
                 "Failed to get orders",
