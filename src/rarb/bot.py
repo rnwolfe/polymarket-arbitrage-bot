@@ -220,6 +220,12 @@ async def run_bot() -> None:
     settings = get_settings()
     setup_logging(settings.log_level)
 
+    if settings.strategy_mode == "market_maker":
+        from rarb.market_maker.bot import run_market_maker_bot
+
+        await run_market_maker_bot()
+        return
+
     async with ArbitrageBot() as bot:
         await bot.run()
 
@@ -356,6 +362,10 @@ class RealtimeArbitrageBot:
 
         alert: ArbitrageAlert = alert
         settings = get_settings()
+
+        if settings.strategy_mode != "arbitrage":
+            log.debug("Arbitrage disabled in current strategy mode")
+            return
 
         self.stats.opportunities_found += 1
 
@@ -1078,6 +1088,12 @@ async def run_realtime_bot() -> None:
     """Entry point for running the real-time bot."""
     settings = get_settings()
     setup_logging(settings.log_level)
+
+    if settings.strategy_mode == "market_maker":
+        from rarb.market_maker.bot import run_market_maker_bot
+
+        await run_market_maker_bot()
+        return
 
     async with RealtimeArbitrageBot() as bot:
         await bot.run()

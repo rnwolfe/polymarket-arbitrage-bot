@@ -24,15 +24,28 @@ def cli() -> None:
 
 @cli.command()
 @click.option("--dry-run/--live", default=True, help="Dry run mode (no real trades)")
-@click.option("--realtime/--polling", default=True, help="Use real-time WebSocket (default) or legacy polling")
+@click.option(
+    "--strategy",
+    type=click.Choice(["market_maker", "arbitrage"]),
+    default="market_maker",
+    help="Trading strategy mode",
+)
+@click.option(
+    "--realtime/--polling", default=True, help="Use real-time WebSocket (default) or legacy polling"
+)
 @click.option("--poll-interval", type=float, help="Seconds between scans (polling mode only)")
 @click.option("--min-profit", type=float, help="Minimum profit threshold (e.g., 0.005 for 0.5%)")
 @click.option("--max-position", type=float, help="Maximum position size in USD")
-@click.option("--with-dashboard", is_flag=True, default=False, help="Run web dashboard alongside the bot")
+@click.option(
+    "--with-dashboard", is_flag=True, default=False, help="Run web dashboard alongside the bot"
+)
 @click.option("--dashboard-port", type=int, help="Dashboard port (default: from config)")
-@click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]), default="INFO")
+@click.option(
+    "--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]), default="INFO"
+)
 def run(
     dry_run: bool,
+    strategy: str,
     realtime: bool,
     poll_interval: Optional[float],
     min_profit: Optional[float],
@@ -48,6 +61,8 @@ def run(
     # Override settings from CLI
     if dry_run is not None:
         os.environ["DRY_RUN"] = str(dry_run).lower()
+    if strategy:
+        os.environ["STRATEGY_MODE"] = strategy
     if poll_interval is not None:
         os.environ["POLL_INTERVAL_SECONDS"] = str(poll_interval)
     if min_profit is not None:
@@ -64,8 +79,12 @@ def run(
 
     mode = "[yellow]DRY RUN[/yellow]" if settings.dry_run else "[red]LIVE TRADING[/red]"
     engine = "[cyan]REAL-TIME WebSocket[/cyan]" if realtime else "[dim]Legacy Polling[/dim]"
-    console.print(f"\n[bold]rarb Arbitrage Bot[/bold] - {mode}")
-    console.print(f"[bold]Engine:[/bold] {engine}\n")
+    console.print(f"\n[bold]rarb Bot[/bold] - {mode}")
+    console.print(f"[bold]Strategy:[/bold] {settings.strategy_mode}")
+    if settings.strategy_mode == "arbitrage":
+        console.print(f"[bold]Engine:[/bold] {engine}\n")
+    else:
+        console.print()
 
     if not settings.dry_run:
         if not settings.private_key or not settings.wallet_address:
@@ -77,10 +96,15 @@ def run(
 
         console.print(f"[dim]Wallet:[/dim] {settings.wallet_address}")
 
-    if not realtime:
-        console.print(f"[dim]Poll interval:[/dim] {settings.poll_interval_seconds}s")
-    console.print(f"[dim]Min profit:[/dim] {settings.min_profit_threshold * 100:.1f}%")
-    console.print(f"[dim]Max position:[/dim] ${settings.max_position_size}")
+    if settings.strategy_mode == "arbitrage":
+        if not realtime:
+            console.print(f"[dim]Poll interval:[/dim] {settings.poll_interval_seconds}s")
+        console.print(f"[dim]Min profit:[/dim] {settings.min_profit_threshold * 100:.1f}%")
+        console.print(f"[dim]Max position:[/dim] ${settings.max_position_size}")
+    else:
+        console.print(f"[dim]Max markets:[/dim] {settings.mm_max_markets}")
+        console.print(f"[dim]Min liquidity:[/dim] ${settings.mm_min_liquidity:.0f}")
+        console.print(f"[dim]Quote size:[/dim] {settings.mm_order_size}")
 
     # Start dashboard in background thread if requested
     # IMPORTANT: Import dashboard module in main thread BEFORE starting background thread
@@ -102,11 +126,17 @@ def run(
     console.print()
 
     try:
-        if realtime:
+        if settings.strategy_mode == "market_maker":
+            from rarb.market_maker.bot import run_market_maker_bot
+
+            asyncio.run(run_market_maker_bot())
+        elif realtime:
             from rarb.bot import run_realtime_bot
+
             asyncio.run(run_realtime_bot())
         else:
             from rarb.bot import run_bot
+
             asyncio.run(run_bot())
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
@@ -182,7 +212,9 @@ def markets(limit: int) -> None:
             # Sort by volume
             markets.sort(key=lambda m: m.volume, reverse=True)
 
-            table = Table(title=f"Active Markets (showing {min(limit, len(markets))} of {len(markets)})")
+            table = Table(
+                title=f"Active Markets (showing {min(limit, len(markets))} of {len(markets)})"
+            )
             table.add_column("Market", style="cyan", max_width=50)
             table.add_column("Volume", justify="right")
             table.add_column("Liquidity", justify="right")
@@ -275,7 +307,9 @@ def orderbook(token_id: str) -> None:
                 spread = ob.best_ask - ob.best_bid
                 console.print(f"\n[dim]Best Bid:[/dim] ${float(ob.best_bid):.4f}")
                 console.print(f"[dim]Best Ask:[/dim] ${float(ob.best_ask):.4f}")
-                console.print(f"[dim]Spread:[/dim] ${float(spread):.4f} ({float(spread / ob.best_ask) * 100:.2f}%)")
+                console.print(
+                    f"[dim]Spread:[/dim] ${float(spread):.4f} ({float(spread / ob.best_ask) * 100:.2f}%)"
+                )
 
     asyncio.run(_orderbook())
 
@@ -284,7 +318,9 @@ def orderbook(token_id: str) -> None:
 @click.option("--dry-run/--live", default=True, help="Dry run mode")
 @click.option("--poll-interval", type=float, default=30.0, help="Seconds between scans")
 @click.option("--min-spread", type=float, default=0.02, help="Minimum spread (e.g., 0.02 for 2%)")
-@click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]), default="INFO")
+@click.option(
+    "--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]), default="INFO"
+)
 def crossplatform(
     dry_run: bool,
     poll_interval: float,
@@ -466,6 +502,7 @@ def status() -> None:
 
         # Record snapshot
         from rarb.tracking.portfolio import BalanceSnapshot
+
         snapshot = BalanceSnapshot(
             timestamp=balances["timestamp"],
             polymarket_usdc=balances["polymarket_usdc"],
@@ -592,23 +629,23 @@ def approve_redemption() -> None:
             {
                 "inputs": [
                     {"name": "operator", "type": "address"},
-                    {"name": "approved", "type": "bool"}
+                    {"name": "approved", "type": "bool"},
                 ],
                 "name": "setApprovalForAll",
                 "outputs": [],
                 "stateMutability": "nonpayable",
-                "type": "function"
+                "type": "function",
             },
             {
                 "inputs": [
                     {"name": "account", "type": "address"},
-                    {"name": "operator", "type": "address"}
+                    {"name": "operator", "type": "address"},
                 ],
                 "name": "isApprovedForAll",
                 "outputs": [{"name": "", "type": "bool"}],
                 "stateMutability": "view",
-                "type": "function"
-            }
+                "type": "function",
+            },
         ]
 
         w3 = Web3(Web3.HTTPProvider(settings.polygon_rpc_url))
@@ -639,13 +676,15 @@ def approve_redemption() -> None:
             nonce = w3.eth.get_transaction_count(wallet)
             gas_price = w3.eth.gas_price
 
-            tx = ctf.functions.setApprovalForAll(operator, True).build_transaction({
-                'from': wallet,
-                'nonce': nonce,
-                'gas': 100000,
-                'gasPrice': int(gas_price * 1.1),  # 10% buffer
-                'chainId': 137,
-            })
+            tx = ctf.functions.setApprovalForAll(operator, True).build_transaction(
+                {
+                    "from": wallet,
+                    "nonce": nonce,
+                    "gas": 100000,
+                    "gasPrice": int(gas_price * 1.1),  # 10% buffer
+                    "chainId": 137,
+                }
+            )
 
             signed = w3.eth.account.sign_transaction(tx, private_key)
             tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
@@ -655,7 +694,7 @@ def approve_redemption() -> None:
             # Wait for confirmation
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
-            if receipt['status'] == 1:
+            if receipt["status"] == 1:
                 console.print(f"[green]✓[/green] {name}: Approved successfully")
             else:
                 console.print(f"[red]✗[/red] {name}: Transaction failed")
@@ -692,7 +731,11 @@ def trades(limit: int, platform: Optional[str]) -> None:
         table.add_column("Expected P/L", justify="right")
 
         for t in recent:
-            time_str = t.timestamp.split("T")[0] + " " + t.timestamp.split("T")[1][:8] if "T" in t.timestamp else t.timestamp
+            time_str = (
+                t.timestamp.split("T")[0] + " " + t.timestamp.split("T")[1][:8]
+                if "T" in t.timestamp
+                else t.timestamp
+            )
             side_color = "green" if t.side == "buy" else "red"
             pl_str = f"${t.profit_expected:.2f}" if t.profit_expected else "-"
 
@@ -745,7 +788,7 @@ def pnl() -> None:
         console.print(f"  Total invested: ${all_time['total_cost']:.2f}")
         console.print(f"  Expected profit: ${all_time['expected_profit']:.2f}")
 
-        if all_time['first_trade']:
+        if all_time["first_trade"]:
             console.print(f"  First trade: {all_time['first_trade'][:10]}")
 
     asyncio.run(_pnl())
@@ -857,7 +900,9 @@ def merge(merge_all: bool, condition_id: Optional[str], live: bool, min_size: fl
 
         # Group by condition_id
         # Key: condition_id, Value: { 'title': str, 'YES': size, 'NO': size, 'neg_risk': bool }
-        markets = defaultdict(lambda: {"title": "Unknown", "YES": 0.0, "NO": 0.0, "neg_risk": False})
+        markets = defaultdict(
+            lambda: {"title": "Unknown", "YES": 0.0, "NO": 0.0, "neg_risk": False}
+        )
 
         for p in positions:
             cid = p.get("conditionId")
@@ -890,14 +935,16 @@ def merge(merge_all: bool, condition_id: Optional[str], live: bool, min_size: fl
 
             amount = min(data["YES"], data["NO"])
             if amount >= min_size:
-                mergeable.append({
-                    "condition_id": cid,
-                    "title": data["title"],
-                    "yes_size": data["YES"],
-                    "no_size": data["NO"],
-                    "amount": amount,
-                    "neg_risk": data["neg_risk"]
-                })
+                mergeable.append(
+                    {
+                        "condition_id": cid,
+                        "title": data["title"],
+                        "yes_size": data["YES"],
+                        "no_size": data["NO"],
+                        "amount": amount,
+                        "neg_risk": data["neg_risk"],
+                    }
+                )
 
         if not mergeable:
             console.print("[yellow]No mergeable positions found[/yellow]")
@@ -913,15 +960,14 @@ def merge(merge_all: bool, condition_id: Optional[str], live: bool, min_size: fl
         total_mergeable = 0.0
         for m in mergeable:
             table.add_row(
-                m["title"][:50],
-                f"{m['yes_size']:.4f}",
-                f"{m['no_size']:.4f}",
-                f"{m['amount']:.4f}"
+                m["title"][:50], f"{m['yes_size']:.4f}", f"{m['no_size']:.4f}", f"{m['amount']:.4f}"
             )
             total_mergeable += m["amount"]
 
         console.print(table)
-        console.print(f"\nTotal mergeable: [bold]${total_mergeable:.2f}[/bold] ({len(mergeable)} pairs)")
+        console.print(
+            f"\nTotal mergeable: [bold]${total_mergeable:.2f}[/bold] ({len(mergeable)} pairs)"
+        )
 
         if not live:
             console.print("\n[yellow]Dry run mode - use --live to execute merges[/yellow]")
@@ -943,7 +989,7 @@ def merge(merge_all: bool, condition_id: Optional[str], live: bool, min_size: fl
                 private_key=pk,
                 condition_id=m["condition_id"],
                 amount=Decimal(str(m["amount"])),
-                neg_risk=m["neg_risk"]
+                neg_risk=m["neg_risk"],
             )
 
             if receipt:
@@ -985,7 +1031,9 @@ def positions() -> None:
             return
 
         # Open positions
-        open_positions = [p for p in positions if not p.get("redeemable") and float(p.get("size", 0)) > 0]
+        open_positions = [
+            p for p in positions if not p.get("redeemable") and float(p.get("size", 0)) > 0
+        ]
         if open_positions:
             table = Table(title="Open Positions")
             table.add_column("Market", max_width=40)
@@ -1044,12 +1092,16 @@ def positions() -> None:
 @cli.command()
 @click.option("--token-id", help="Specific token ID to sell (optional)")
 @click.option("--all", "sell_all", is_flag=True, help="Sell all open positions")
-@click.option("--min-value", type=float, default=0.01, help="Minimum position value to sell (default: $0.01)")
+@click.option(
+    "--min-value", type=float, default=0.01, help="Minimum position value to sell (default: $0.01)"
+)
 @click.option("--dry-run/--live", default=True, help="Dry run mode (default: dry run)")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
-def sell_positions(token_id: Optional[str], sell_all: bool, min_value: float, dry_run: bool, yes: bool) -> None:
+def sell_positions(
+    token_id: Optional[str], sell_all: bool, min_value: float, dry_run: bool, yes: bool
+) -> None:
     """Sell open positions at market price.
-    
+
     Use this to liquidate orphaned or unwanted positions.
     By default runs in dry-run mode - use --live to actually sell.
     """
@@ -1088,7 +1140,7 @@ def sell_positions(token_id: Optional[str], sell_all: bool, min_value: float, dr
             size = float(p.get("size", 0) or 0)
             cur_price = float(p.get("curPrice", 0) or 0)
             value = size * cur_price
-            
+
             if size > 0 and not p.get("redeemable"):
                 # Filter by token_id if specified
                 if token_id and p.get("asset") != token_id:
@@ -1096,10 +1148,12 @@ def sell_positions(token_id: Optional[str], sell_all: bool, min_value: float, dr
                 # Filter by min value
                 if value < min_value:
                     continue
-                open_positions.append({
-                    **p,
-                    "current_value": value,
-                })
+                open_positions.append(
+                    {
+                        **p,
+                        "current_value": value,
+                    }
+                )
 
         if not open_positions:
             console.print("[yellow]No positions match criteria[/yellow]")
@@ -1140,7 +1194,9 @@ def sell_positions(token_id: Optional[str], sell_all: bool, min_value: float, dr
             return
 
         # Confirm
-        if not yes and not click.confirm(f"\nSell {len(open_positions)} positions for ~${total_value:.2f}?"):
+        if not yes and not click.confirm(
+            f"\nSell {len(open_positions)} positions for ~${total_value:.2f}?"
+        ):
             console.print("[dim]Cancelled[/dim]")
             return
 
@@ -1157,14 +1213,14 @@ def sell_positions(token_id: Optional[str], sell_all: bool, min_value: float, dr
             asset = p.get("asset")
             size = float(p.get("size", 0))
             cur_price = float(p.get("curPrice", 0))
-            
+
             if not asset or size <= 0:
                 continue
 
             # Sell at slightly below market to ensure fill
             # Use 95% of current price as limit (5% slippage tolerance)
             sell_price = max(0.001, cur_price * 0.95)
-            
+
             console.print(f"Selling {size:.2f} {p.get('outcome', '?')} @ ${sell_price:.4f}...")
 
             try:
@@ -1306,7 +1362,9 @@ def backfill_balance(polygonscan_api_key: Optional[str], dry_run: bool) -> None:
         console.print(table)
 
         if dry_run:
-            console.print(f"\n[yellow]Dry run:[/yellow] Would insert {len(daily_changes)} snapshots")
+            console.print(
+                f"\n[yellow]Dry run:[/yellow] Would insert {len(daily_changes)} snapshots"
+            )
         else:
             console.print(f"\n[green]Success:[/green] Inserted {inserted} daily balance snapshots")
 
@@ -1332,6 +1390,7 @@ def dashboard(host: str, port: Optional[int]) -> None:
     console.print()
 
     from rarb.dashboard import run_dashboard
+
     run_dashboard(host=host, port=actual_port)
 
 

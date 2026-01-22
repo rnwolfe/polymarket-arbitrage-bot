@@ -152,6 +152,15 @@ class GammaClient:
             Market object or None if parsing fails
         """
         try:
+
+            def _parse_decimal(value: Any) -> Optional[Decimal]:
+                if value is None or value == "":
+                    return None
+                try:
+                    return Decimal(str(value))
+                except Exception:
+                    return None
+
             # Extract token info - API sometimes returns JSON strings
             tokens = data.get("tokens", [])
             if isinstance(tokens, str):
@@ -260,6 +269,26 @@ class GammaClient:
                 except (ValueError, TypeError) as e:
                     log.debug("Failed to parse end_date", raw=end_date_raw, error=str(e))
 
+            tick_size = _parse_decimal(data.get("tickSize") or data.get("tick_size"))
+            if tick_size is None or tick_size <= 0:
+                tick_size = Decimal("0.01")
+
+            max_incentive_spread = _parse_decimal(
+                data.get("maxIncentiveSpread")
+                or data.get("max_incentive_spread")
+                or data.get("maxIncentiveSpreadValue")
+            )
+            min_incentive_size = _parse_decimal(
+                data.get("minIncentiveSize")
+                or data.get("min_incentive_size")
+                or data.get("minIncentiveSizeValue")
+            )
+            incentive_reward = _parse_decimal(
+                data.get("incentiveReward")
+                or data.get("rewardAmount")
+                or data.get("liquidityReward")
+            )
+
             # Detect 15-minute crypto up/down markets which have dynamic fees
             # These have time RANGES like "6:00AM-6:15AM ET" not just "6AM ET"
             # Pattern: must contain "AM-" or "PM-" (the dash indicates a range)
@@ -297,6 +326,10 @@ class GammaClient:
                 end_date=end_date,
                 has_fees=has_fees,
                 neg_risk=data.get("negRisk", False),
+                tick_size=tick_size,
+                max_incentive_spread=max_incentive_spread,
+                min_incentive_size=min_incentive_size,
+                incentive_reward=incentive_reward,
             )
 
         except (KeyError, ValueError, TypeError) as e:

@@ -89,6 +89,10 @@ class Market:
     end_date: Optional[datetime] = None
     has_fees: bool = False
     neg_risk: bool = False
+    tick_size: Decimal = Decimal("0.01")
+    max_incentive_spread: Optional[Decimal] = None
+    min_incentive_size: Optional[Decimal] = None
+    incentive_reward: Optional[Decimal] = None
 
     # Order books (populated separately)
     yes_orderbook: Optional[OrderBook] = None
@@ -113,6 +117,13 @@ class Market:
     def spread(self) -> Decimal:
         """Get arbitrage spread (1 - combined_price)."""
         return Decimal("1") - self.combined_price
+
+    @property
+    def is_incentivized(self) -> bool:
+        """Check if market has liquidity rewards configured."""
+        if self.max_incentive_spread is None or self.min_incentive_size is None:
+            return False
+        return self.max_incentive_spread > 0 and self.min_incentive_size > 0
 
 
 @dataclass

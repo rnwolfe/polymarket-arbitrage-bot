@@ -115,9 +115,93 @@ class Settings(BaseSettings):
         default=True,
         description="If true, simulate trades without executing",
     )
+    strategy_mode: str = Field(
+        default="market_maker",
+        description="Trading strategy mode: arbitrage or market_maker",
+    )
     auto_merge: bool = Field(
         default=True,
         description="If true, automatically merge YES+NO tokens to USDC after successful arbitrage",
+    )
+
+    # Market making parameters
+    mm_market_ids: list[str] = Field(
+        default_factory=list,
+        description="Optional list of market IDs to quote (empty = auto-select)",
+    )
+    mm_max_markets: int = Field(
+        default=5,
+        description="Maximum markets to quote when auto-selecting",
+        ge=1,
+        le=50,
+    )
+    mm_min_liquidity: float = Field(
+        default=10000.0,
+        description="Minimum liquidity for market maker selection",
+        ge=0.0,
+    )
+    mm_max_days_until_resolution: Optional[int] = Field(
+        default=None,
+        description="Optional max days until resolution for MM market selection",
+    )
+    mm_refresh_interval: float = Field(
+        default=5.0,
+        description="Seconds between quote refresh cycles",
+        ge=0.5,
+        le=60.0,
+    )
+    mm_quote_offset: float = Field(
+        default=0.01,
+        description="Target offset from midpoint for quotes",
+        ge=0.0,
+        le=0.1,
+    )
+    mm_order_size: float = Field(
+        default=20.0,
+        description="Default quote size per side",
+        ge=1.0,
+    )
+    mm_min_quote_size: Optional[float] = Field(
+        default=None,
+        description="Override for minimum quote size (defaults to incentive min size)",
+    )
+    mm_max_position_size: float = Field(
+        default=200.0,
+        description="Max inventory per token",
+        ge=1.0,
+    )
+    mm_inventory_soft_limit_pct: float = Field(
+        default=0.7,
+        description="Soft inventory limit percentage for skewing quotes",
+        ge=0.1,
+        le=1.0,
+    )
+    mm_order_staleness_seconds: int = Field(
+        default=45,
+        description="Seconds before refreshing existing orders",
+        ge=5,
+        le=600,
+    )
+    mm_price_tolerance: float = Field(
+        default=0.002,
+        description="Price delta tolerance before replacing orders",
+        ge=0.0,
+        le=0.1,
+    )
+    mm_size_tolerance: float = Field(
+        default=1.0,
+        description="Size delta tolerance before replacing orders",
+        ge=0.0,
+    )
+    mm_tick_size: float = Field(
+        default=0.01,
+        description="Default tick size when not provided by market",
+        ge=0.001,
+        le=0.1,
+    )
+    mm_cancel_on_stop: bool = Field(
+        default=True,
+        description="If true, cancel outstanding MM orders on shutdown",
     )
 
     # Dashboard

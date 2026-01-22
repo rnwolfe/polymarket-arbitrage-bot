@@ -568,6 +568,7 @@ class AsyncClobClient:
         self,
         signed_order: SignedOrder,
         order_type: str = "GTC",
+        post_only: Optional[bool] = None,
     ) -> dict[str, Any]:
         """
         Submit a signed order to the CLOB API.
@@ -581,6 +582,8 @@ class AsyncClobClient:
             "owner": self.api_key,
             "orderType": order_type,
         }
+        if post_only is not None:
+            body["postOnly"] = post_only
 
         # Serialize with exact formatting for signature
         body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
@@ -622,6 +625,7 @@ class AsyncClobClient:
         signed_order: SignedOrder,
         client: httpx.AsyncClient,
         order_type: str = "GTC",
+        post_only: Optional[bool] = None,
     ) -> dict[str, Any]:
         """
         Submit a signed order using a specific HTTP client.
@@ -636,6 +640,8 @@ class AsyncClobClient:
             "owner": self.api_key,
             "orderType": order_type,
         }
+        if post_only is not None:
+            body["postOnly"] = post_only
 
         body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
         headers = self._get_l2_headers("POST", path, body_str)
@@ -662,6 +668,7 @@ class AsyncClobClient:
         neg_risk: Optional[bool] = None,
         fee_rate_bps: Optional[int] = None,
         order_type: str = "GTC",  # Default to GTC with immediate cancel for arbitrage
+        post_only: Optional[bool] = None,
     ) -> dict[str, Any]:
         """
         Sign and submit an order in one call.
@@ -709,7 +716,11 @@ class AsyncClobClient:
         )
         t2 = time.time()
 
-        result = await self.post_order(signed_order, order_type=order_type)
+        result = await self.post_order(
+            signed_order,
+            order_type=order_type,
+            post_only=post_only,
+        )
         t3 = time.time()
 
         log.debug(
@@ -726,6 +737,7 @@ class AsyncClobClient:
         self,
         orders: list[tuple[str, str, float, float, Optional[bool], Optional[int]]],
         order_type: str = "GTC",
+        post_only: Optional[bool] = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """
         Submit multiple orders in parallel with optimized latency.
@@ -806,7 +818,10 @@ class AsyncClobClient:
             start = time.time()
             try:
                 result = await self._post_order_with_client(
-                    signed_order, client, order_type=order_type
+                    signed_order,
+                    client,
+                    order_type=order_type,
+                    post_only=post_only,
                 )
             except Exception as e:
                 result = e
