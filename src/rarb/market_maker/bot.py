@@ -19,6 +19,8 @@ from rarb.market_maker.state import (
     clear_market_maker_state,
     update_market_maker_state,
 )
+from rarb.market_maker.types import MarketQuote
+from rarb.tracking.portfolio import PortfolioTracker
 from rarb.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -36,6 +38,7 @@ class MarketMakerBot:
         self.inventory_manager: Optional[InventoryManager] = None
         self.quote_engine = QuoteEngine(self.settings)
         self.order_manager: Optional[OrderManager] = None
+        self.portfolio_tracker = PortfolioTracker()
 
         self.market_ids: List[str] = getattr(self.settings, "mm_market_ids", [])
         self.refresh_interval = getattr(self.settings, "mm_refresh_interval", 5.0)
@@ -187,6 +190,8 @@ class MarketMakerBot:
                 # 2. Re-sync orders periodically
                 await self.order_manager.sync_with_exchange()
 
+                available_usdc = await self._get_available_usdc()
+
                 # 3. Compute and place quotes for each market
                 for mid, token_map in self._market_tokens.items():
                     market = self._markets.get(mid)
@@ -207,7 +212,10 @@ class MarketMakerBot:
                     )
 
                     if quotes:
-                        await self.order_manager.place_quotes(quotes)
+                        filtered = self._filter_quotes_by_balance(quotes, available_usdc)
+                        if filtered:
+                            await self.order_manager.place_quotes(filtered)
+                            available_usdc -= sum(q.price * q.size for q in filtered)
 
                 # Wait for next interval
                 if self.ws_client and not self.ws_client.is_connected:
@@ -254,6 +262,44 @@ class MarketMakerBot:
         clear_market_maker_state()
 
         log.info("Bot stopped")
+
+    async def _get_available_usdc(self) -> float:
+        try:
+            balances = await self.portfolio_tracker.get_current_balances()
+            balance = float(balances.get("polymarket_usdc", 0.0))
+        except Exception as e:
+            log.warning("Failed to fetch balance", error=str(e))
+            balance = 0.0
+
+        locked = 0.0
+        if self.order_manager:
+            locked = sum(o.price * o.size for o in self.order_manager.list_open_orders())
+
+        return max(0.0, balance - locked)
+
+    def _filter_quotes_by_balance(
+        self, quotes: List[MarketQuote], available_usdc: float
+    ) -> List[MarketQuote]:
+        if available_usdc <= 0:
+            return []
+
+        allowed: List[MarketQuote] = []
+        remaining = available_usdc
+        for quote in quotes:
+            notional = quote.price * quote.size
+            if notional <= 0:
+                continue
+            if notional <= remaining:
+                allowed.append(quote)
+                remaining -= notional
+            else:
+                log.debug(
+                    "Skipping quote due to balance",
+                    token_id=quote.token_id,
+                    required=notional,
+                    available=remaining,
+                )
+        return allowed
 
     def _publish_state(self) -> None:
         if not self.inventory_manager or not self.order_manager:

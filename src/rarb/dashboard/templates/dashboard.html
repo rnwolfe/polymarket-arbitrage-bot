@@ -710,6 +710,10 @@
                         <span id="config-mode">--</span>
                     </div>
                     <div class="stat-row">
+                        <span>Strategy</span>
+                        <span id="config-strategy">--</span>
+                    </div>
+                    <div class="stat-row">
                         <span>Min Profit</span>
                         <span id="config-profit">--</span>
                     </div>
@@ -1125,6 +1129,7 @@
                 document.getElementById('config-mode').innerHTML = data.bot.dry_run
                     ? '<span class="neutral">DRY RUN</span>'
                     : '<span class="positive">LIVE</span>';
+                document.getElementById('config-strategy').textContent = data.bot.strategy_mode || 'arbitrage';
                 document.getElementById('config-profit').textContent = data.bot.min_profit;
                 document.getElementById('config-position').textContent = data.bot.max_position;
 
