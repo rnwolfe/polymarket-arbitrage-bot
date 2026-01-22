@@ -54,3 +54,7 @@ class InventoryManager:
     def get_market_inventory(self, market_id: str) -> Optional[InventoryState]:
         """Get all positions for a market."""
         return self._inventory.get(market_id)
+
+    def snapshot(self) -> Dict[str, Dict[str, float]]:
+        """Get a snapshot of inventory for external reporting."""
+        return {market_id: dict(state.positions) for market_id, state in self._inventory.items()}

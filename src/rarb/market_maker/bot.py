@@ -1,6 +1,7 @@
 import asyncio
 import asyncio
 import signal
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from rarb.api.models import Market
@@ -9,8 +10,15 @@ from rarb.executor.async_clob import AsyncClobClient, create_async_clob_client
 from rarb.api.gamma import GammaClient
 from rarb.api.websocket import WebSocketClient, OrderBookUpdate
 from rarb.market_maker.inventory import InventoryManager
-from rarb.market_maker.quotes import QuoteEngine
 from rarb.market_maker.orders import OrderManager
+from rarb.market_maker.quotes import QuoteEngine
+from rarb.market_maker.state import (
+    MarketMakerSnapshot,
+    MarketSnapshot,
+    OrderSnapshot,
+    clear_market_maker_state,
+    update_market_maker_state,
+)
 from rarb.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -65,6 +73,7 @@ class MarketMakerBot:
         # Initial sync
         await self.inventory_manager.refresh()
         await self.order_manager.sync_with_exchange()
+        self._publish_state()
 
         log.info("Initialization complete")
 
@@ -205,6 +214,8 @@ class MarketMakerBot:
                     log.warning("WebSocket disconnected, reconnecting")
                     await self._connect_ws()
 
+                self._publish_state()
+
                 elapsed = asyncio.get_event_loop().time() - t0
                 wait_time = max(0.1, self.refresh_interval - elapsed)
                 await asyncio.sleep(wait_time)
@@ -240,7 +251,52 @@ class MarketMakerBot:
         if self.gamma_client:
             await self.gamma_client.close()
 
+        clear_market_maker_state()
+
         log.info("Bot stopped")
+
+    def _publish_state(self) -> None:
+        if not self.inventory_manager or not self.order_manager:
+            return
+
+        markets: Dict[str, MarketSnapshot] = {}
+        for market_id, market in self._markets.items():
+            markets[market_id] = MarketSnapshot(
+                market_id=market.id,
+                question=market.question,
+                end_date=market.end_date.isoformat() if market.end_date else None,
+                max_incentive_spread=float(market.max_incentive_spread)
+                if market.max_incentive_spread is not None
+                else None,
+                min_incentive_size=float(market.min_incentive_size)
+                if market.min_incentive_size is not None
+                else None,
+                tick_size=float(market.tick_size),
+                tokens=dict(self._market_tokens.get(market_id, {})),
+            )
+
+        open_orders = [
+            OrderSnapshot(
+                order_id=order.order_id,
+                market_id=order.market_id,
+                token_id=order.token_id,
+                side=order.side,
+                price=order.price,
+                size=order.size,
+                created_at=order.created_at,
+            )
+            for order in self.order_manager.list_open_orders()
+        ]
+
+        snapshot = MarketMakerSnapshot(
+            updated_at=datetime.utcnow(),
+            markets=markets,
+            order_books=dict(self._order_books),
+            inventory=self.inventory_manager.snapshot(),
+            open_orders=open_orders,
+        )
+
+        update_market_maker_state(snapshot)
 
     async def __aenter__(self) -> "MarketMakerBot":
         await self.initialize()
@@ -268,3 +324,5 @@ async def run_market_maker_bot() -> None:
     async with MarketMakerBot() as bot:
         setup_signal_handlers(bot)
         await bot.run()
+
+    clear_market_maker_state()

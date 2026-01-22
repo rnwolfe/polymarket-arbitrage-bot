@@ -24,6 +24,7 @@ from rarb.data.repositories import (
     TradeRepository,
 )
 from rarb.executor.async_clob import create_async_clob_client
+from rarb.market_maker.state import get_market_maker_state
 from rarb.tracking.portfolio import PortfolioTracker
 from rarb.utils.logging import get_logger
 
@@ -119,6 +120,7 @@ def create_app() -> FastAPI:
         return {
             "bot": {
                 "dry_run": settings.dry_run,
+                "strategy_mode": settings.strategy_mode,
                 "min_profit": f"{settings.min_profit_threshold * 100:.1f}%",
                 "max_position": f"${settings.max_position_size}",
                 "wallet": settings.wallet_address[:10] + "..." if settings.wallet_address else None,
@@ -126,6 +128,119 @@ def create_app() -> FastAPI:
             "scanner": scanner_stats,
             "timestamp": datetime.now().isoformat(),
         }
+
+    @app.get("/api/mm/summary")
+    async def get_mm_summary(username: str = Depends(verify_credentials)):
+        """Get market maker summary stats."""
+        snapshot = get_market_maker_state()
+        if not snapshot:
+            return {"error": "market maker not initialized"}
+
+        locked_usdc = 0.0
+        for order in snapshot.open_orders:
+            locked_usdc += order.price * order.size
+
+        inventory_notional = 0.0
+        for market_id, positions in snapshot.inventory.items():
+            market = snapshot.markets.get(market_id)
+            if not market:
+                continue
+            for outcome, token_id in market.tokens.items():
+                size = positions.get(token_id, 0.0)
+                if size <= 0:
+                    continue
+                book = snapshot.order_books.get(token_id, {})
+                price = book.get("best_bid") or book.get("best_ask") or 0.0
+                inventory_notional += size * price
+
+        return {
+            "markets": len(snapshot.markets),
+            "quotes": len(snapshot.open_orders),
+            "locked_usdc": locked_usdc,
+            "inventory_notional": inventory_notional,
+            "last_update": snapshot.updated_at.isoformat(),
+        }
+
+    @app.get("/api/mm/markets")
+    async def get_mm_markets(username: str = Depends(verify_credentials)):
+        """Get market maker market-level snapshot."""
+        snapshot = get_market_maker_state()
+        if not snapshot:
+            return {"markets": [], "error": "market maker not initialized"}
+
+        orders_by_market: dict[str, int] = {}
+        for order in snapshot.open_orders:
+            orders_by_market[order.market_id] = orders_by_market.get(order.market_id, 0) + 1
+
+        markets = []
+        for market_id, market in snapshot.markets.items():
+            positions = snapshot.inventory.get(market_id, {})
+            yes_id = market.tokens.get("YES")
+            no_id = market.tokens.get("NO")
+            yes_size = positions.get(yes_id, 0.0) if yes_id else 0.0
+            no_size = positions.get(no_id, 0.0) if no_id else 0.0
+
+            yes_book = snapshot.order_books.get(yes_id, {}) if yes_id else {}
+            no_book = snapshot.order_books.get(no_id, {}) if no_id else {}
+
+            markets.append(
+                {
+                    "market_id": market.market_id,
+                    "question": market.question,
+                    "end_date": market.end_date,
+                    "incentive": {
+                        "max_spread": market.max_incentive_spread,
+                        "min_size": market.min_incentive_size,
+                    },
+                    "inventory": {
+                        "yes": yes_size,
+                        "no": no_size,
+                        "net": yes_size - no_size,
+                    },
+                    "book": {
+                        "yes_bid": yes_book.get("best_bid"),
+                        "yes_ask": yes_book.get("best_ask"),
+                        "no_bid": no_book.get("best_bid"),
+                        "no_ask": no_book.get("best_ask"),
+                    },
+                    "quote_count": orders_by_market.get(market_id, 0),
+                }
+            )
+
+        return {"markets": markets, "count": len(markets)}
+
+    @app.get("/api/mm/quotes")
+    async def get_mm_quotes(username: str = Depends(verify_credentials)):
+        """Get open market maker quotes."""
+        snapshot = get_market_maker_state()
+        if not snapshot:
+            return {"quotes": [], "error": "market maker not initialized"}
+
+        now = datetime.utcnow()
+        market_map = {mid: m.question for mid, m in snapshot.markets.items()}
+        token_outcome: dict[str, str] = {}
+        for market in snapshot.markets.values():
+            for outcome, token_id in market.tokens.items():
+                token_outcome[token_id] = outcome
+
+        quotes = []
+        for order in snapshot.open_orders:
+            age_seconds = (now - order.created_at).total_seconds()
+            quotes.append(
+                {
+                    "order_id": order.order_id,
+                    "market_id": order.market_id,
+                    "market": market_map.get(order.market_id, ""),
+                    "outcome": token_outcome.get(order.token_id, ""),
+                    "side": order.side,
+                    "price": order.price,
+                    "size": order.size,
+                    "value": order.price * order.size,
+                    "age_seconds": age_seconds,
+                }
+            )
+
+        return {"quotes": quotes, "count": len(quotes)}
 
     @app.get("/api/balance")
     async def get_balance(username: str = Depends(verify_credentials)):
@@ -170,21 +285,23 @@ def create_app() -> FastAPI:
                 else:
                     status = "OPEN"
 
-                formatted.append({
-                    "market": p.get("title", p.get("market", "")),
-                    "outcome": p.get("outcome", ""),
-                    "size": size,
-                    "avg_price": float(p.get("avgPrice", 0) or 0),
-                    "current_price": cur_price,
-                    "pnl": float(p.get("cashPnl", 0) or 0),
-                    "realized_pnl": float(p.get("realizedPnl", 0) or 0),
-                    "initial_value": float(p.get("initialValue", 0) or 0),
-                    "current_value": float(p.get("currentValue", 0) or 0),
-                    "token_id": p.get("asset", ""),
-                    "status": status,
-                    "redeemable": redeemable,
-                    "end_date": p.get("endDate", ""),
-                })
+                formatted.append(
+                    {
+                        "market": p.get("title", p.get("market", "")),
+                        "outcome": p.get("outcome", ""),
+                        "size": size,
+                        "avg_price": float(p.get("avgPrice", 0) or 0),
+                        "current_price": cur_price,
+                        "pnl": float(p.get("cashPnl", 0) or 0),
+                        "realized_pnl": float(p.get("realizedPnl", 0) or 0),
+                        "initial_value": float(p.get("initialValue", 0) or 0),
+                        "current_value": float(p.get("currentValue", 0) or 0),
+                        "token_id": p.get("asset", ""),
+                        "status": status,
+                        "redeemable": redeemable,
+                        "end_date": p.get("endDate", ""),
+                    }
+                )
 
             # Split into open and closed positions
             open_positions = [p for p in formatted if p["status"] == "OPEN"]
@@ -287,9 +404,7 @@ def create_app() -> FastAPI:
     @app.get("/api/pnl")
     async def get_pnl(username: str = Depends(verify_credentials)):
         """Get profit/loss summary including TRUE P&L from balance history."""
-        daily = await TradeRepository.get_daily_summary(
-            datetime.now().strftime("%Y-%m-%d")
-        )
+        daily = await TradeRepository.get_daily_summary(datetime.now().strftime("%Y-%m-%d"))
         all_time = await TradeRepository.get_all_time_summary()
 
         tracker = PortfolioTracker()
@@ -300,7 +415,7 @@ def create_app() -> FastAPI:
 
         # Get realized profit from closed positions
         closed_summary = await ClosedPositionRepository.get_profit_summary()
-        
+
         # Get TRUE P&L from balance history (the irrefutable ground truth)
         true_pnl_data = await BalanceHistoryRepository.get_true_pnl()
 
@@ -481,38 +596,41 @@ def create_app() -> FastAPI:
             if timing_json:
                 try:
                     import json
+
                     timing = json.loads(timing_json)
                 except Exception:
                     pass
 
-            formatted_executions.append({
-                "timestamp": e.get("timestamp", ""),
-                "market": e.get("market", ""),
-                "status": e.get("status", ""),
-                "yes_order": {
-                    "order_id": e.get("yes_order_id"),
-                    "status": e.get("yes_status", ""),
-                    "price": float(e.get("yes_price", 0) or 0),
-                    "size": float(e.get("yes_size", 0) or 0),
-                    "filled_size": float(e.get("yes_filled_size", 0) or 0),
-                    "error": e.get("yes_error"),
-                },
-                "no_order": {
-                    "order_id": e.get("no_order_id"),
-                    "status": e.get("no_status", ""),
-                    "price": float(e.get("no_price", 0) or 0),
-                    "size": float(e.get("no_size", 0) or 0),
-                    "filled_size": float(e.get("no_filled_size", 0) or 0),
-                    "error": e.get("no_error"),
-                },
-                "total_cost": float(e.get("total_cost", 0) or 0),
-                "expected_profit": float(e.get("expected_profit", 0) or 0),
-                "profit_pct": float(e.get("profit_pct", 0) or 0),
-                "market_liquidity": float(e.get("market_liquidity", 0) or 0),
-                "yes_liquidity": float(e.get("yes_liquidity", 0) or 0),
-                "no_liquidity": float(e.get("no_liquidity", 0) or 0),
-                "timing": timing,
-            })
+            formatted_executions.append(
+                {
+                    "timestamp": e.get("timestamp", ""),
+                    "market": e.get("market", ""),
+                    "status": e.get("status", ""),
+                    "yes_order": {
+                        "order_id": e.get("yes_order_id"),
+                        "status": e.get("yes_status", ""),
+                        "price": float(e.get("yes_price", 0) or 0),
+                        "size": float(e.get("yes_size", 0) or 0),
+                        "filled_size": float(e.get("yes_filled_size", 0) or 0),
+                        "error": e.get("yes_error"),
+                    },
+                    "no_order": {
+                        "order_id": e.get("no_order_id"),
+                        "status": e.get("no_status", ""),
+                        "price": float(e.get("no_price", 0) or 0),
+                        "size": float(e.get("no_size", 0) or 0),
+                        "filled_size": float(e.get("no_filled_size", 0) or 0),
+                        "error": e.get("no_error"),
+                    },
+                    "total_cost": float(e.get("total_cost", 0) or 0),
+                    "expected_profit": float(e.get("expected_profit", 0) or 0),
+                    "profit_pct": float(e.get("profit_pct", 0) or 0),
+                    "market_liquidity": float(e.get("market_liquidity", 0) or 0),
+                    "yes_liquidity": float(e.get("yes_liquidity", 0) or 0),
+                    "no_liquidity": float(e.get("no_liquidity", 0) or 0),
+                    "timing": timing,
+                }
+            )
 
         return {
             "active_orders": [],  # Active orders are still in-memory

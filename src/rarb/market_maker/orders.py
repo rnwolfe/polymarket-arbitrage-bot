@@ -161,3 +161,7 @@ class OrderManager:
     def get_open_orders_for_market(self, market_id: str) -> List[OpenOrder]:
         """Get all managed open orders for a specific market."""
         return [o for o in self._open_orders.values() if o.market_id == market_id]
+
+    def list_open_orders(self) -> List[OpenOrder]:
+        """List all open orders managed by the bot."""
+        return list(self._open_orders.values())

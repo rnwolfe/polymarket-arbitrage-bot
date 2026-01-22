@@ -100,11 +100,129 @@
             margin-bottom: 24px;
         }
 
+        .tabs {
+            display: flex;
+            gap: 8px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 6px;
+            margin-bottom: 20px;
+        }
+
+        .tab-button {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            padding: 10px 12px;
+            border-radius: 10px;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: background 0.2s, color 0.2s;
+        }
+
+        .tab-button.active {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+
         .card {
             background: var(--bg-secondary);
             border: 1px solid var(--border);
             border-radius: 12px;
             padding: 20px;
+        }
+
+        .mm-summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .mm-market-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 16px;
+        }
+
+        .market-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .market-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+        }
+
+        .market-title {
+            font-size: 14px;
+            font-weight: 600;
+            line-height: 1.3;
+        }
+
+        .market-meta {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .badge {
+            font-size: 11px;
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent-blue);
+            white-space: nowrap;
+        }
+
+        .inventory-bar {
+            position: relative;
+            height: 10px;
+            background: var(--bg-tertiary);
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        .inventory-yes {
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            background: rgba(63, 185, 80, 0.7);
+        }
+
+        .inventory-no {
+            position: absolute;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            background: rgba(248, 81, 73, 0.7);
+        }
+
+        .quote-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            background: var(--bg-tertiary);
+            border-radius: 999px;
+            font-size: 11px;
+            color: var(--text-secondary);
         }
 
         .card-header {
@@ -604,6 +722,86 @@
 
         </div>
 
+        <div class="tabs">
+            <button class="tab-button active" data-tab="market-making">Market Making</button>
+            <button class="tab-button" data-tab="arbitrage">Arbitrage</button>
+            <button class="tab-button" data-tab="operations">Operations</button>
+        </div>
+
+        <div class="tab-panels">
+            <section class="tab-panel active" data-tab="market-making">
+                <div class="mm-summary-grid">
+                    <div class="card" id="mm-summary-card">
+                        <div class="card-header">
+                            <span class="card-title">MM Overview</span>
+                            <span class="card-icon">🧭</span>
+                        </div>
+                        <div id="mm-summary-content">
+                            <div class="stat-value">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="card" id="mm-liquidity-card">
+                        <div class="card-header">
+                            <span class="card-title">Inventory</span>
+                            <span class="card-icon">📦</span>
+                        </div>
+                        <div id="mm-inventory-content">
+                            <div class="stat-value">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="card" id="mm-quotes-card">
+                        <div class="card-header">
+                            <span class="card-title">Active Quotes</span>
+                            <span class="card-icon">📝</span>
+                        </div>
+                        <div id="mm-quotes-summary">
+                            <div class="stat-value">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="two-col" style="margin-bottom: 24px;">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Markets</span>
+                            <span class="refresh-indicator">Live</span>
+                        </div>
+                        <div id="mm-market-grid" class="mm-market-grid">
+                            <div class="empty-state">Loading markets...</div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Quote Monitor</span>
+                            <span class="refresh-indicator">Live</span>
+                        </div>
+                        <div class="table-container" id="mm-quotes-container">
+                            <div class="empty-state">Loading quotes...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="terminal">
+                    <div class="terminal-header">
+                        <div class="terminal-dots">
+                            <span class="terminal-dot red"></span>
+                            <span class="terminal-dot yellow"></span>
+                            <span class="terminal-dot green"></span>
+                        </div>
+                        <span class="terminal-title">Live Activity Feed</span>
+                    </div>
+                    <div class="terminal-body" id="activity-feed">
+                        <div class="log-line">
+                            <span class="log-time">--:--:--</span>
+                            <span class="log-type info">INFO</span>
+                            <span class="log-message">Connecting to dashboard...</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="tab-panel" data-tab="arbitrage">
+
         <!-- Charts Section -->
         <div class="charts-grid">
             <!-- Price Updates Chart (minute-level) -->
@@ -691,25 +889,9 @@
             </div>
         </div>
 
-        <!-- Live Activity Feed -->
-        <div class="terminal">
-            <div class="terminal-header">
-                <div class="terminal-dots">
-                    <span class="terminal-dot red"></span>
-                    <span class="terminal-dot yellow"></span>
-                    <span class="terminal-dot green"></span>
-                </div>
-                <span class="terminal-title">Live Activity Feed</span>
-            </div>
-            <div class="terminal-body" id="activity-feed">
-                <div class="log-line">
-                    <span class="log-time">--:--:--</span>
-                    <span class="log-type info">INFO</span>
-                    <span class="log-message">Connecting to dashboard...</span>
-                </div>
-            </div>
-        </div>
+        </section>
 
+        <section class="tab-panel" data-tab="operations">
         <!-- Positions Section -->
         <div style="margin-bottom: 24px;">
             <!-- Open Positions -->
@@ -781,6 +963,9 @@
             </div>
         </div>
 
+        </section>
+
+        <section class="tab-panel" data-tab="arbitrage">
         <!-- Alerts and Trades -->
         <div class="two-col">
             <!-- Alerts Section -->
@@ -826,6 +1011,9 @@
             </div>
         </div>
 
+        </section>
+        </div>
+
     </div>
 
     <script>
@@ -834,6 +1022,34 @@
 
         // Track which timing rows are expanded (persists across re-renders)
         const expandedTimingRows = new Set();
+
+        const tabButtons = document.querySelectorAll('.tab-button');
+        const tabPanels = document.querySelectorAll('.tab-panel');
+        let activeTab = null;
+        let strategyMode = null;
+
+        function setActiveTab(tabName) {
+            activeTab = tabName;
+            tabButtons.forEach((button) => {
+                const isActive = button.dataset.tab === tabName;
+                button.classList.toggle('active', isActive);
+            });
+            tabPanels.forEach((panel) => {
+                const isActive = panel.dataset.tab === tabName;
+                panel.classList.toggle('active', isActive);
+            });
+        }
+
+        tabButtons.forEach((button) => {
+            button.addEventListener('click', () => {
+                setActiveTab(button.dataset.tab);
+            });
+        });
+
+        function formatUsd(value) {
+            if (value === null || value === undefined) return '-';
+            return `$${value.toFixed(2)}`;
+        }
 
         // Helper function to format timestamps properly
         function formatDateTime(timestamp) {
@@ -912,6 +1128,11 @@
                 document.getElementById('config-profit').textContent = data.bot.min_profit;
                 document.getElementById('config-position').textContent = data.bot.max_position;
 
+                strategyMode = data.bot.strategy_mode || 'arbitrage';
+                if (!activeTab) {
+                    setActiveTab(strategyMode === 'market_maker' ? 'market-making' : 'arbitrage');
+                }
+
                 // Log price updates delta (use daily value for consistency)
                 const updatesDelta = priceUpdatesToday - lastPriceUpdates;
                 if (lastPriceUpdates > 0 && updatesDelta > 0) {
@@ -922,6 +1143,130 @@
             } catch (e) {
                 console.error('Status fetch error:', e);
                 addLogLine('error', 'Failed to fetch status');
+            }
+        }
+
+        function renderMmSummary(summary) {
+            if (!summary || summary.error) {
+                document.getElementById('mm-summary-content').innerHTML = '<div class="stat-value negative">Unavailable</div>';
+                document.getElementById('mm-inventory-content').innerHTML = '<div class="stat-value negative">Unavailable</div>';
+                document.getElementById('mm-quotes-summary').innerHTML = '<div class="stat-value negative">Unavailable</div>';
+                return;
+            }
+
+            document.getElementById('mm-summary-content').innerHTML = `
+                <div class="stat-value">${summary.markets}</div>
+                <div class="stat-row"><span>Active Markets</span><span>${summary.markets}</span></div>
+                <div class="stat-row"><span>Last Update</span><span>${new Date(summary.last_update).toLocaleTimeString()}</span></div>
+            `;
+
+            document.getElementById('mm-inventory-content').innerHTML = `
+                <div class="stat-value">${formatUsd(summary.inventory_notional || 0)}</div>
+                <div class="stat-row"><span>Inventory Notional</span><span>${formatUsd(summary.inventory_notional || 0)}</span></div>
+            `;
+
+            document.getElementById('mm-quotes-summary').innerHTML = `
+                <div class="stat-value">${summary.quotes}</div>
+                <div class="stat-row"><span>Locked USDC</span><span>${formatUsd(summary.locked_usdc || 0)}</span></div>
+            `;
+        }
+
+        function renderMmMarkets(markets) {
+            const container = document.getElementById('mm-market-grid');
+            if (!markets || markets.length === 0) {
+                container.innerHTML = '<div class="empty-state">No markets available</div>';
+                return;
+            }
+
+            container.innerHTML = markets.map((market) => {
+                const yesSize = market.inventory.yes || 0;
+                const noSize = market.inventory.no || 0;
+                const total = yesSize + noSize;
+                const yesPct = total > 0 ? (yesSize / total) * 100 : 50;
+                const noPct = total > 0 ? (noSize / total) * 100 : 50;
+                const maxSpread = market.incentive.max_spread;
+                const minSize = market.incentive.min_size;
+                const endDate = market.end_date ? new Date(market.end_date).toLocaleDateString() : 'n/a';
+
+                return `
+                    <div class="market-card">
+                        <div class="market-header">
+                            <div>
+                                <div class="market-title">${market.question}</div>
+                                <div class="market-meta">Ends ${endDate}</div>
+                            </div>
+                            <span class="badge">Spread ${maxSpread?.toFixed(3) ?? '-'}</span>
+                        </div>
+                        <div class="market-meta">Min size ${minSize ?? '-'}</div>
+                        <div class="inventory-bar">
+                            <div class="inventory-yes" style="width: ${yesPct}%;"></div>
+                            <div class="inventory-no" style="width: ${noPct}%;"></div>
+                        </div>
+                        <div class="stat-row"><span>YES / NO</span><span>${yesSize.toFixed(2)} / ${noSize.toFixed(2)}</span></div>
+                        <div class="stat-row"><span>YES Bid/Ask</span><span>${market.book.yes_bid ?? '-'} / ${market.book.yes_ask ?? '-'}</span></div>
+                        <div class="stat-row"><span>NO Bid/Ask</span><span>${market.book.no_bid ?? '-'} / ${market.book.no_ask ?? '-'}</span></div>
+                        <div class="quote-pill">Quotes: ${market.quote_count}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderMmQuotes(quotes) {
+            const container = document.getElementById('mm-quotes-container');
+            if (!quotes || quotes.length === 0) {
+                container.innerHTML = '<div class="empty-state">No active quotes</div>';
+                return;
+            }
+
+            const rows = quotes.map((q) => `
+                <tr>
+                    <td>${q.market}</td>
+                    <td>${q.outcome}</td>
+                    <td>${q.side}</td>
+                    <td>$${q.price.toFixed(3)}</td>
+                    <td>${q.size.toFixed(2)}</td>
+                    <td>${formatUsd(q.value)}</td>
+                    <td>${Math.floor(q.age_seconds)}s</td>
+                </tr>
+            `).join('');
+
+            container.innerHTML = `
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Market</th>
+                            <th>Outcome</th>
+                            <th>Side</th>
+                            <th>Price</th>
+                            <th>Size</th>
+                            <th>Value</th>
+                            <th>Age</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rows}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        async function fetchMarketMaking() {
+            if (strategyMode && strategyMode !== 'market_maker') return;
+            try {
+                const [summaryResp, marketsResp, quotesResp] = await Promise.all([
+                    fetch('/api/mm/summary'),
+                    fetch('/api/mm/markets'),
+                    fetch('/api/mm/quotes'),
+                ]);
+                const summary = await summaryResp.json();
+                const marketsData = await marketsResp.json();
+                const quotesData = await quotesResp.json();
+
+                renderMmSummary(summary);
+                renderMmMarkets(marketsData.markets || []);
+                renderMmQuotes(quotesData.quotes || []);
+            } catch (e) {
+                console.error('Market making fetch error:', e);
             }
         }
 
@@ -2557,6 +2902,7 @@
         fetchStatus();
         fetchBalance();
         fetchPnL();
+        fetchMarketMaking();
         fetchAlerts();
         fetchNearMissAlerts();
         fetchTrades();
@@ -2575,6 +2921,7 @@
         setInterval(fetchStatus, 5000);      // Status every 5s
         setInterval(fetchBalance, 30000);    // Balance every 30s
         setInterval(fetchPnL, 60000);        // PnL every 60s
+        setInterval(fetchMarketMaking, 5000); // MM state every 5s
         setInterval(() => fetchAlerts(false), 5000);      // Alerts every 5s
         setInterval(() => fetchNearMissAlerts(false), 10000);  // Near-miss every 10s
         setInterval(() => fetchTrades(false), 30000);     // Trades every 30s
