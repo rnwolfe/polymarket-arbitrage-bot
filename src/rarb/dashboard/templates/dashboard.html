@@ -721,6 +721,22 @@
                         <span>Max Position</span>
                         <span id="config-position">--</span>
                     </div>
+                    <div class="stat-row" id="config-reserve-row" style="display: none;">
+                        <span>Reserve</span>
+                        <span id="config-reserve">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Floating Orders Card -->
+            <div class="card" id="floating-orders-card" style="display: none;">
+                <div class="card-header">
+                    <span class="card-title">Floating Orders</span>
+                    <span class="card-icon">💸</span>
+                </div>
+                <div id="floating-orders-content">
+                    <div class="stat-value" id="stat-locked-usdc">--</div>
+                    <div class="stat-label">Locked in active quotes</div>
                 </div>
             </div>
 
@@ -1133,6 +1149,15 @@
                 document.getElementById('config-profit').textContent = data.bot.min_profit;
                 document.getElementById('config-position').textContent = data.bot.max_position;
 
+                if ((data.bot.strategy_mode || 'arbitrage') === 'market_maker' && data.bot.mm_reserve) {
+                    document.getElementById('config-reserve-row').style.display = 'flex';
+                    document.getElementById('config-reserve').textContent = `${data.bot.mm_reserve} / ${data.bot.mm_reserve_min}`;
+                    document.getElementById('floating-orders-card').style.display = 'block';
+                } else {
+                    document.getElementById('config-reserve-row').style.display = 'none';
+                    document.getElementById('floating-orders-card').style.display = 'none';
+                }
+
                 strategyMode = data.bot.strategy_mode || 'arbitrage';
                 if (!activeTab) {
                     setActiveTab(strategyMode === 'market_maker' ? 'market-making' : 'arbitrage');
@@ -1174,6 +1199,11 @@
                 <div class="stat-value">${summary.quotes}</div>
                 <div class="stat-row"><span>Locked USDC</span><span>${formatUsd(summary.locked_usdc || 0)}</span></div>
             `;
+
+            const lockedEl = document.getElementById('stat-locked-usdc');
+            if (lockedEl) {
+                lockedEl.textContent = formatUsd(summary.locked_usdc || 0);
+            }
         }
 
         function renderMmMarkets(markets) {

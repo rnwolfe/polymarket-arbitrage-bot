@@ -182,6 +182,27 @@ class Settings(BaseSettings):
         ge=5,
         le=600,
     )
+    mm_reserve_pct: float = Field(
+        default=0.1,
+        description="Reserve buffer percentage of total balance (0.1 = 10%)",
+        ge=0.0,
+        le=0.9,
+    )
+    mm_reserve_min_usdc: float = Field(
+        default=25.0,
+        description="Minimum absolute USDC reserve floor",
+        ge=0.0,
+    )
+    mm_market_cooldown_seconds: int = Field(
+        default=10,
+        description="Seconds to pause quoting a market after successful order placement",
+        ge=0,
+    )
+    mm_max_midpoint_move: float = Field(
+        default=0.03,
+        description="Maximum midpoint move before skipping a cycle for a token",
+        ge=0.0,
+    )
     mm_price_tolerance: float = Field(
         default=0.002,
         description="Price delta tolerance before replacing orders",

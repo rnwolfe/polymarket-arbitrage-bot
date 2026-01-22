@@ -123,6 +123,8 @@ def create_app() -> FastAPI:
                 "strategy_mode": settings.strategy_mode,
                 "min_profit": f"{settings.min_profit_threshold * 100:.1f}%",
                 "max_position": f"${settings.max_position_size}",
+                "mm_reserve": f"{getattr(settings, 'mm_reserve_pct', 0.1) * 100:.0f}%",
+                "mm_reserve_min": f"${getattr(settings, 'mm_reserve_min_usdc', 25.0)}",
                 "wallet": settings.wallet_address[:10] + "..." if settings.wallet_address else None,
             },
             "scanner": scanner_stats,
@@ -136,9 +138,10 @@ def create_app() -> FastAPI:
         if not snapshot:
             return {"error": "market maker not initialized"}
 
-        locked_usdc = 0.0
-        for order in snapshot.open_orders:
-            locked_usdc += order.price * order.size
+        locked_usdc = getattr(snapshot, "locked_usdc", 0.0)
+        if locked_usdc == 0.0 and snapshot.open_orders:
+            for order in snapshot.open_orders:
+                locked_usdc += order.price * order.size
 
         inventory_notional = 0.0
         for market_id, positions in snapshot.inventory.items():

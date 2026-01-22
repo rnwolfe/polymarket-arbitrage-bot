@@ -32,6 +32,7 @@ class MarketMakerSnapshot:
     order_books: Dict[str, Dict[str, Optional[float]]]
     inventory: Dict[str, Dict[str, float]]
     open_orders: List[OrderSnapshot]
+    locked_usdc: float = 0.0
 
 
 _snapshot: Optional[MarketMakerSnapshot] = None

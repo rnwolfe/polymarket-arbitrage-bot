@@ -51,6 +51,10 @@ class MarketMakerBot:
         self._ws_task: Optional[asyncio.Task] = None
         self._all_token_ids: List[str] = []
 
+        # Tracking for filters
+        self._market_last_quote_time: Dict[str, float] = {}
+        self._last_midpoints: Dict[str, float] = {}
+
     async def initialize(self) -> None:
         """Initialize all components and connections."""
         log.info("Initializing Market Maker Bot")
@@ -191,11 +195,59 @@ class MarketMakerBot:
                 await self.order_manager.sync_with_exchange()
 
                 available_usdc = await self._get_available_usdc()
+                balances = await self.portfolio_tracker.get_current_balances()
+                total_balance = float(balances.get("polymarket_usdc", 0.0))
+
+                reserve_pct = getattr(self.settings, "mm_reserve_pct", 0.1)
+                reserve_min = getattr(self.settings, "mm_reserve_min_usdc", 25.0)
+                reserve_buffer = max(total_balance * reserve_pct, reserve_min)
 
                 # 3. Compute and place quotes for each market
+                now = asyncio.get_event_loop().time()
                 for mid, token_map in self._market_tokens.items():
                     market = self._markets.get(mid)
                     if not market:
+                        continue
+
+                    # Cooldown filter
+                    last_quote_time = self._market_last_quote_time.get(mid, 0)
+                    cooldown = getattr(self.settings, "mm_market_cooldown_seconds", 10)
+                    if now - last_quote_time < cooldown:
+                        continue
+
+                    # Reserve buffer filter
+                    if available_usdc < reserve_buffer:
+                        log.debug(
+                            "Skipping market due to reserve buffer",
+                            market_id=mid,
+                            available=available_usdc,
+                            reserve=reserve_buffer,
+                        )
+                        continue
+
+                    # Adverse selection filter
+                    skip_market = False
+                    max_move = getattr(self.settings, "mm_max_midpoint_move", 0.03)
+                    for token_id in token_map.values():
+                        book = self._order_books.get(token_id)
+                        if not book or book.get("best_bid") is None or book.get("best_ask") is None:
+                            continue
+
+                        midpoint = (book["best_bid"] + book["best_ask"]) / 2.0
+                        last_midpoint = self._last_midpoints.get(token_id)
+
+                        if last_midpoint is not None and abs(midpoint - last_midpoint) > max_move:
+                            log.warning(
+                                "Adverse selection detected",
+                                market_id=mid,
+                                token_id=token_id,
+                                move=round(abs(midpoint - last_midpoint), 4),
+                            )
+                            skip_market = True
+
+                        self._last_midpoints[token_id] = midpoint
+
+                    if skip_market:
                         continue
 
                     inventory = self.inventory_manager.get_market_inventory(mid)
@@ -215,6 +267,7 @@ class MarketMakerBot:
                         filtered = self._filter_quotes_by_balance(quotes, available_usdc)
                         if filtered:
                             await self.order_manager.place_quotes(filtered)
+                            self._market_last_quote_time[mid] = now
                             available_usdc -= sum(q.price * q.size for q in filtered)
 
                 # Wait for next interval
@@ -334,12 +387,15 @@ class MarketMakerBot:
             for order in self.order_manager.list_open_orders()
         ]
 
+        locked_usdc = sum(o.price * o.size for o in open_orders)
+
         snapshot = MarketMakerSnapshot(
             updated_at=datetime.utcnow(),
             markets=markets,
             order_books=dict(self._order_books),
             inventory=self.inventory_manager.snapshot(),
             open_orders=open_orders,
+            locked_usdc=locked_usdc,
         )
 
         update_market_maker_state(snapshot)
