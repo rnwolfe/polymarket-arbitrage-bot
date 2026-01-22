@@ -1289,10 +1289,11 @@ class OrderExecutor:
         ) or no_result.status in (ExecutionStatus.PENDING, ExecutionStatus.SUBMITTED):
             async_client = self._async_client
             if async_client:
-                # Retry up to 3 times with increasing delays (100ms, 300ms, 600ms)
-                max_retries = 3
+                # Retry up to 5 times with delays to account for Polymarket indexing (2-5s typical)
+                max_retries = 5
                 for attempt in range(max_retries):
-                    wait_time = 0.1 * (attempt + 1) * 2  # 0.2s, 0.4s, 0.6s
+                    # First two attempts: 0.5s, 1.0s; then 1.5s for remaining
+                    wait_time = 0.5 * (attempt + 1) if attempt < 2 else 1.5
                     await asyncio.sleep(wait_time)
 
                     try:
@@ -1366,13 +1367,83 @@ class OrderExecutor:
                         ExecutionStatus.SUBMITTED,
                     ):
                         log.info(f"{name} order not filled after {max_retries} checks - cancelling")
-                        result.status = ExecutionStatus.CANCELLED
-                        result.filled_size = Decimal(0)
+                        # Try to cancel, but verify the actual state
                         try:
-                            await async_client.cancel_order(result.order_id)
-                        except:
-                            pass
-                        self._update_order_status(result.order_id, "cancelled", 0)
+                            cancel_success = await async_client.cancel_order(result.order_id)
+                            if cancel_success:
+                                result.status = ExecutionStatus.CANCELLED
+                                result.filled_size = Decimal(0)
+                                log.info(f"{name} order cancelled successfully")
+                            else:
+                                # Cancel failed - order may have filled. Check order status.
+                                order_info = await async_client.get_order(result.order_id)
+                                if order_info:
+                                    order_status = order_info.get("status", "").upper()
+                                    size_matched = float(
+                                        order_info.get("size_matched", 0)
+                                        or order_info.get("sizeMatched", 0)
+                                        or 0
+                                    )
+                                    if order_status == "MATCHED" or size_matched > 0:
+                                        result.filled_size = (
+                                            Decimal(str(size_matched))
+                                            if size_matched > 0
+                                            else result.size
+                                        )
+                                        result.status = (
+                                            ExecutionStatus.FILLED
+                                            if size_matched >= float(result.size) * 0.99
+                                            else ExecutionStatus.PARTIAL
+                                        )
+                                        log.info(
+                                            f"{name} order actually FILLED (cancel failed, order matched)",
+                                            filled=float(result.filled_size),
+                                        )
+                                    else:
+                                        result.status = ExecutionStatus.CANCELLED
+                                        result.filled_size = Decimal(0)
+                                        log.info(f"{name} order status: {order_status}")
+                                else:
+                                    # Can't determine status - be conservative, assume cancelled
+                                    result.status = ExecutionStatus.CANCELLED
+                                    result.filled_size = Decimal(0)
+                        except Exception as e:
+                            log.warning(
+                                f"Error during {name} order cancellation/verification", error=str(e)
+                            )
+                            # On error, try to get order status as fallback
+                            try:
+                                order_info = await async_client.get_order(result.order_id)
+                                if order_info:
+                                    size_matched = float(
+                                        order_info.get("size_matched", 0)
+                                        or order_info.get("sizeMatched", 0)
+                                        or 0
+                                    )
+                                    if size_matched > 0:
+                                        result.filled_size = Decimal(str(size_matched))
+                                        result.status = (
+                                            ExecutionStatus.FILLED
+                                            if size_matched >= float(result.size) * 0.99
+                                            else ExecutionStatus.PARTIAL
+                                        )
+                                        log.info(
+                                            f"{name} order filled (verified after error)",
+                                            filled=float(result.filled_size),
+                                        )
+                            except:
+                                pass
+                            if result.status in (
+                                ExecutionStatus.PENDING,
+                                ExecutionStatus.SUBMITTED,
+                            ):
+                                result.status = ExecutionStatus.CANCELLED
+                                result.filled_size = Decimal(0)
+
+                        # Update dashboard status
+                        self._update_order_status(
+                            result.order_id, result.status.value, float(result.filled_size)
+                        )
             else:
                 log.error("Cannot check GTC order status - no async client")
 
@@ -1404,8 +1475,8 @@ class OrderExecutor:
 
                     merge_success, merged_amount, merge_error = await check_and_merge_position(
                         condition_id=opportunity.market.condition_id,
-                        yes_filled_size=yes_result.filled_size or opportunity.max_trade_size,
-                        no_filled_size=no_result.filled_size or opportunity.max_trade_size,
+                        yes_filled_size=yes_result.filled_size,
+                        no_filled_size=no_result.filled_size,
                         neg_risk=getattr(opportunity.market, "neg_risk", False),
                         market_title=opportunity.market.question,
                         combined_cost=opportunity.combined_cost,

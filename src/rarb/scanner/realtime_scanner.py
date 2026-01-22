@@ -1,6 +1,7 @@
 """Real-time market scanner using WebSocket streaming."""
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -30,6 +31,7 @@ DEFAULT_WS_CONNECTIONS = 6
 @dataclass
 class MarketPrices:
     """Tracks current prices for a market's YES and NO tokens."""
+
     market: Market
     yes_best_bid: Optional[Decimal] = None
     yes_best_ask: Optional[Decimal] = None
@@ -67,6 +69,7 @@ class MarketPrices:
 @dataclass
 class ArbitrageAlert:
     """Alert for detected arbitrage opportunity."""
+
     market: Market
     yes_ask: Decimal
     no_ask: Decimal
@@ -92,36 +95,36 @@ def calculate_book_depth_liquidity(
 ) -> tuple[Decimal, Decimal]:
     """
     Walk the order book to calculate total liquidity within slippage tolerance.
-    
+
     Instead of only looking at the best ask size, this aggregates liquidity
     across multiple price levels up to max_slippage above best ask.
-    
+
     Args:
         asks: List of ask levels (must have .price and .size attributes)
         best_ask_price: The best (lowest) ask price
         max_slippage: Maximum price above best ask to include (default 2 cents)
-    
+
     Returns:
         Tuple of (total_size, weighted_avg_price)
     """
     if not asks:
         return Decimal("0"), best_ask_price
-    
+
     max_price = best_ask_price + max_slippage
     total_size = Decimal("0")
     total_value = Decimal("0")  # For weighted average calculation
-    
+
     for level in sorted(asks, key=lambda x: x.price):
         if level.price > max_price:
             break
         total_size += level.size
         total_value += level.size * level.price
-    
+
     if total_size > 0:
         weighted_avg_price = total_value / total_size
     else:
         weighted_avg_price = best_ask_price
-    
+
     return total_size, weighted_avg_price
 
 
@@ -150,12 +153,17 @@ class RealtimeScanner:
         self.gamma = GammaClient()
 
         # Use settings from config, allow override via constructor
-        self.min_liquidity = min_liquidity if min_liquidity is not None else settings.min_liquidity_usd
+        self.min_liquidity = (
+            min_liquidity if min_liquidity is not None else settings.min_liquidity_usd
+        )
         self.max_days_until_resolution = (
-            max_days_until_resolution if max_days_until_resolution is not None
+            max_days_until_resolution
+            if max_days_until_resolution is not None
             else settings.max_days_until_resolution
         )
-        self.num_connections = num_connections if num_connections is not None else settings.num_ws_connections
+        self.num_connections = (
+            num_connections if num_connections is not None else settings.num_ws_connections
+        )
 
         # Calculate max markets based on connections
         # Each connection can handle 500 assets = 250 markets (YES + NO tokens)
@@ -205,7 +213,7 @@ class RealtimeScanner:
 
         # Sort by liquidity and take top N
         markets.sort(key=lambda m: m.liquidity, reverse=True)
-        markets = markets[:self.max_markets]
+        markets = markets[: self.max_markets]
 
         # Build lookup tables
         self._markets = {}
@@ -248,7 +256,7 @@ class RealtimeScanner:
             end = start + MAX_ASSETS_PER_WS
             batch = token_ids[start:end]
             if batch:
-                log.info(f"Connection {i+1}: subscribing to {len(batch)} tokens")
+                log.info(f"Connection {i + 1}: subscribing to {len(batch)} tokens")
                 await client.subscribe(batch)
 
     def _on_book_update(self, update: OrderBookUpdate) -> None:
@@ -361,10 +369,12 @@ class RealtimeScanner:
                         market=prices.market.question[:40],
                         profit=f"{float(profit) * 100:.3f}%",
                         threshold=f"{settings.min_profit_threshold * 100:.1f}%",
-                        combined=f"${float(prices.combined_ask):.4f}" if prices.combined_ask else "N/A",
+                        combined=f"${float(prices.combined_ask):.4f}"
+                        if prices.combined_ask
+                        else "N/A",
                     )
                 # Track the best near-miss for stats logging
-                if not hasattr(self, '_best_near_miss') or profit > self._best_near_miss:
+                if not hasattr(self, "_best_near_miss") or profit > self._best_near_miss:
                     self._best_near_miss = profit
                     self._best_near_miss_market = prices.market.question[:40]
 
@@ -380,10 +390,12 @@ class RealtimeScanner:
                     duration_secs=f"{duration_secs:.3f}s",
                 )
                 # Update the alert's duration in the database
-                asyncio.create_task(self._update_alert_duration(
-                    prices.market.question[:60],
-                    duration_secs,
-                ))
+                asyncio.create_task(
+                    self._update_alert_duration(
+                        prices.market.question[:60],
+                        duration_secs,
+                    )
+                )
             return
 
         # Check resolution date - skip markets that resolve too far in the future
@@ -455,7 +467,7 @@ class RealtimeScanner:
             no_ask=prices.no_best_ask or Decimal("0"),
             combined_cost=combined,
             profit_pct=profit,
-            timestamp=asyncio.get_event_loop().time(),
+            timestamp=time.time(),
             yes_size_available=yes_size or Decimal("0"),
             no_size_available=no_size or Decimal("0"),
         )
@@ -478,7 +490,9 @@ class RealtimeScanner:
             profit=f"{float(alert.profit_pct) * 100:.2f}%",
             yes_liq=f"${float(alert.yes_size_available):.2f}",
             no_liq=f"${float(alert.no_size_available):.2f}",
-            resolves_in=f"{days_until_resolution}d" if days_until_resolution is not None else "unknown",
+            resolves_in=f"{days_until_resolution}d"
+            if days_until_resolution is not None
+            else "unknown",
             open_for=f"{duration_secs:.1f}s",
         )
 
@@ -498,13 +512,15 @@ class RealtimeScanner:
         # Send Slack notification (already async)
         try:
             notifier = get_notifier()
-            asyncio.create_task(notifier.notify_arbitrage(
-                market=prices.market.question,
-                yes_ask=alert.yes_ask,
-                no_ask=alert.no_ask,
-                combined=alert.combined_cost,
-                profit_pct=alert.profit_pct,
-            ))
+            asyncio.create_task(
+                notifier.notify_arbitrage(
+                    market=prices.market.question,
+                    yes_ask=alert.yes_ask,
+                    no_ask=alert.no_ask,
+                    combined=alert.combined_cost,
+                    profit_pct=alert.profit_pct,
+                )
+            )
         except Exception as e:
             log.debug("Slack notification failed", error=str(e))
 
@@ -534,7 +550,7 @@ class RealtimeScanner:
         # Connect all WebSocket clients
         for i, client in enumerate(self.ws_clients):
             await client.connect()
-            log.info(f"WebSocket connection {i+1} established")
+            log.info(f"WebSocket connection {i + 1} established")
 
         # Subscribe to markets (distributes across connections)
         await self.subscribe_to_markets()
@@ -544,11 +560,13 @@ class RealtimeScanner:
             self._run_websocket_with_reconnect(i, client)
             for i, client in enumerate(self.ws_clients)
         ]
-        tasks.extend([
-            self._periodic_market_refresh(),
-            self._periodic_stats(),
-            self._zombie_connection_watchdog(),
-        ])
+        tasks.extend(
+            [
+                self._periodic_market_refresh(),
+                self._periodic_stats(),
+                self._zombie_connection_watchdog(),
+            ]
+        )
         await asyncio.gather(*tasks)
 
     async def _run_websocket_with_reconnect(self, conn_id: int, client: WebSocketClient) -> None:
@@ -559,14 +577,14 @@ class RealtimeScanner:
                 await client.listen()
 
             except Exception as e:
-                log.error(f"WebSocket {conn_id+1} error", error=str(e))
+                log.error(f"WebSocket {conn_id + 1} error", error=str(e))
 
             if not self._running:
                 break
 
             # Reconnect with backoff
             delay = min(client._reconnect_delay, 30)
-            log.info(f"Reconnecting WebSocket {conn_id+1}", delay=delay)
+            log.info(f"Reconnecting WebSocket {conn_id + 1}", delay=delay)
             await asyncio.sleep(delay)
             client._reconnect_delay = min(delay * 2, 60)
 
@@ -581,7 +599,7 @@ class RealtimeScanner:
                 if batch:
                     await client.subscribe(batch)
             except Exception as e:
-                log.error(f"WebSocket {conn_id+1} reconnect failed", error=str(e))
+                log.error(f"WebSocket {conn_id + 1} reconnect failed", error=str(e))
 
     async def _periodic_market_refresh(self, interval: float = 600) -> None:
         """Periodically refresh market list (every 10 min)."""
@@ -605,7 +623,9 @@ class RealtimeScanner:
             except Exception as e:
                 log.error("Market refresh error", error=str(e))
 
-    async def _zombie_connection_watchdog(self, check_interval: float = 30, stale_threshold: float = 60) -> None:
+    async def _zombie_connection_watchdog(
+        self, check_interval: float = 30, stale_threshold: float = 60
+    ) -> None:
         """
         Watchdog to detect and fix zombie WebSocket connections.
 
@@ -655,9 +675,9 @@ class RealtimeScanner:
             # Include best near-miss in stats if available
             best_spread = None
             best_spread_market = None
-            if hasattr(self, '_best_near_miss') and self._best_near_miss:
+            if hasattr(self, "_best_near_miss") and self._best_near_miss:
                 best_spread = f"{float(self._best_near_miss) * 100:.3f}%"
-                best_spread_market = getattr(self, '_best_near_miss_market', None)
+                best_spread_market = getattr(self, "_best_near_miss_market", None)
 
             # Get connection health info
             connection_ages = [
@@ -708,9 +728,7 @@ class RealtimeScanner:
     ) -> None:
         """Save arbitrage alert to database (non-blocking)."""
         # Schedule async save as a task
-        asyncio.create_task(
-            self._save_alert_async(alert, first_seen, duration_secs)
-        )
+        asyncio.create_task(self._save_alert_async(alert, first_seen, duration_secs))
 
     async def _save_alert_async(
         self,

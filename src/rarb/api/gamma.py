@@ -261,21 +261,27 @@ class GammaClient:
                     log.debug("Failed to parse end_date", raw=end_date_raw, error=str(e))
 
             # Detect 15-minute crypto up/down markets which have dynamic fees
+            # These have time RANGES like "6:00AM-6:15AM ET" not just "6AM ET"
+            # Pattern: must contain "AM-" or "PM-" (the dash indicates a range)
             has_fees = False
-            question_lower = data.get("question", "").lower()
-            if (
-                "up or down" in question_lower
-                and any(crypto in question_lower for crypto in ["bitcoin", "ethereum", "solana"])
-                and any(
-                    time_marker in data.get("question", "")
-                    for time_marker in ["AM ET", "PM ET", "AM-", "PM-"]
-                )
+            question = data.get("question", "")
+            question_lower = question.lower()
+            if "up or down" in question_lower and any(
+                crypto in question_lower for crypto in ["bitcoin", "ethereum", "solana"]
             ):
-                has_fees = True
-                log.debug(
-                    "Detected fee-enabled 15-min market",
-                    question=data.get("question", "")[:50],
-                )
+                # Must have a time RANGE (contains dash between times)
+                # Examples that SHOULD match: "6:00AM-6:15AM", "12:00PM-12:15PM"
+                # Examples that should NOT match: "6AM ET", "12PM ET"
+                import re
+
+                # Pattern: digit(s):digitdigitAM/PM-digit(s):digitdigitAM/PM
+                time_range_pattern = r"\d{1,2}:\d{2}[AP]M-\d{1,2}:\d{2}[AP]M"
+                if re.search(time_range_pattern, question):
+                    has_fees = True
+                    log.debug(
+                        "Detected fee-enabled 15-min market",
+                        question=question[:60],
+                    )
 
             return Market(
                 id=str(data.get("id", "")),
