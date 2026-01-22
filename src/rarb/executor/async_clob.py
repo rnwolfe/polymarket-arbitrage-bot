@@ -936,8 +936,19 @@ class AsyncClobClient:
             f"{self.host}{path}",
             headers=headers,
         )
+        if response.status_code != 200:
+            log.error(
+                "Failed to get orders",
+                status=response.status_code,
+                body=response.text[:200],
+            )
+            return []
 
-        return response.json()
+        try:
+            return response.json()
+        except Exception as e:
+            log.error("Failed to parse orders response", error=str(e), body=response.text[:200])
+            return []
 
     async def get_trades(self) -> list[dict]:
         """Get trade history."""
